@@ -1,16 +1,17 @@
+To run this:
+
+Open 4 terminals: (and then also conda activate the virtual env)
+terminal 1: nats-server
+terminal 2: python ultra_precision_detector.py
+terminal 3: fraud_report_gen.py
+terminal 4: fraud_publisher.py
 
 
+dataset from:
+https://drive.google.com/file/d/1-DQEylAJap9aLtvHCFzMzUQmRvZzXNP4/view?usp=drive_link
 
-run the following:
-# run the conda activate env before - uploaded the yml file for the same.
-
-
-1. nats-server
-2. python fraud_publisher.py
-3. python try6_det.py
-4. python fraud_subscriber.py
-
-
+video:
+https://drive.google.com/file/d/1-DQEylAJap9aLtvHCFzMzUQmRvZzXNP4/view?usp=sharing
 
 # with this setup i got:
 
@@ -29,8 +30,3 @@ Actual Rate:                  800 txns/sec
 Expected Time:               1296.67s
 ─────────────────────────────────────────────────────────
 
-
-
-
-# sota_detector.py has all the cool features and paper implementation but poor results.
-# try6_det.py has best results, at faster transactions per second
