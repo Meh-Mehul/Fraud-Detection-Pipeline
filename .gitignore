@@ -76,3 +76,8 @@ __MACOSX/
 *.swp
 *.swo
 *.orig
+
+# Large datasets
+fraudTrain.csv
+fraudTest.csv
+*.csv
