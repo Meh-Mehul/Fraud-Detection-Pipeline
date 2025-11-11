@@ -1,57 +1,58 @@
 """
-INTELLIGENT FRAUD REPORT GENERATOR 
-Real-time fraud analysis with professional bank-grade PDF reports
+PATHWAY FRAUD REPORT GENERATOR - ENHANCED
+Professional PDF reports for fraud alerts with comprehensive analysis
 
 Features:
-- Real-time streaming with NATS
-- Automated fraud analysis
-- Generates professional bank-style investigation reports as PDFs
+- Subscribes to fraud alert stream
+- Generates bank-grade PDF investigation reports
+- Comprehensive fraud indicator decoding
+- Detailed risk assessment and investigation protocols
 - Tracks unique fraud patterns
-- Saves reports to fraud_reports/ folder
+
 
 Requirements:
-pip install reportlab nats-py python-dotenv
+pip install pathway reportlab
 """
 
-import asyncio
-import json
+import pathway as pw
 import os
+import json
 from datetime import datetime
-from nats.aio.client import Client as NATS
-from dotenv import load_dotenv
+from pathlib import Path
 
-# --- Load Environment Variables ---
-load_dotenv()
-
-# Try to import ReportLab for PDF generation
+# Try to import ReportLab
 PDF_AVAILABLE = False
 try:
-    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch, cm
+    from reportlab.lib.units import inch
     from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table, 
-                                    TableStyle, PageBreak, Image, KeepTogether, 
-                                    HRFlowable, Flowable)
+                                    TableStyle, PageBreak, Flowable)
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY, TA_RIGHT
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
     from reportlab.pdfgen import canvas
     PDF_AVAILABLE = True
 except ImportError:
-    print("⚠️  reportlab not installed. Install with: pip install reportlab")
+    print("⚠️  Install reportlab: pip install reportlab")
+
 
 print("═══════════════════════════════════════════════════════════")
-print("  INTELLIGENT FRAUD REPORT GENERATOR v3.0")
+print("  INTELLIGENT FRAUD REPORT GENERATOR v4.0 (Pathway)")
 print("═══════════════════════════════════════════════════════════")
 
-if not PDF_AVAILABLE:
-    print("⚠️  ReportLab not available - will save as Markdown")
-else:
+if PDF_AVAILABLE:
     print("✓ PDF generation enabled (ReportLab)")
+else:
+    print("⚠️  PDF generation disabled - install reportlab")
 
-print("✓ Real-time NATS streaming")
-print("✓ Generating reports for unique fraud patterns")
+print("✓ Real-time Pathway streaming")
+print("✓ Comprehensive fraud analysis")
 print()
 
+
+# ============================================================================
+# REPORT GENERATION
+# ============================================================================
 
 class HeaderFooterCanvas(canvas.Canvas):
     """Custom canvas for professional headers and footers"""
@@ -74,7 +75,6 @@ class HeaderFooterCanvas(canvas.Canvas):
         
     def draw_header_footer(self, page_num, page_count):
         """Draw professional header and footer on each page"""
-        # Header
         self.saveState()
         
         # Header background
@@ -100,17 +100,14 @@ class HeaderFooterCanvas(canvas.Canvas):
         self.setLineWidth(2)
         self.line(0.75*inch, 0.7*inch, letter[0] - 0.75*inch, 0.7*inch)
         
-        # Footer text
         self.setFont('Helvetica', 8)
         self.setFillColor(colors.HexColor('#666666'))
         self.drawString(0.75*inch, 0.5*inch, 
                        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Page number
         self.drawRightString(letter[0] - 0.75*inch, 0.5*inch, 
                             f"Page {page_num} of {page_count}")
         
-        # Confidential notice
         self.setFont('Helvetica-Bold', 7)
         self.setFillColor(colors.HexColor('#c41e3a'))
         conf_text = "CONFIDENTIAL - FOR AUTHORIZED PERSONNEL ONLY"
@@ -131,11 +128,9 @@ class StatusBox(Flowable):
         self.height = height
         
     def draw(self):
-        # Draw rounded rectangle background
         self.canv.setFillColor(self.status_color)
         self.canv.roundRect(0, 0, self.width, self.height, 8, fill=1, stroke=0)
         
-        # Draw text
         self.canv.setFillColor(colors.white)
         self.canv.setFont('Helvetica-Bold', 14)
         text_width = self.canv.stringWidth(self.status_text, 'Helvetica-Bold', 14)
@@ -143,29 +138,30 @@ class StatusBox(Flowable):
                             self.status_text)
 
 
-class FraudReportGenerator:
+class ReportGenerator:
+    """Generate PDF reports from alerts"""
+    
     def __init__(self):
-        self.reports_dir = "fraud_reports"
-        os.makedirs(self.reports_dir, exist_ok=True)
-        
-        self.seen_reasons = set()
+        self.reports_dir = Path("fraud_reports")
+        self.reports_dir.mkdir(exist_ok=True)
+        self.seen_patterns = set()
         self.report_count = 0
         self.total_alerts = 0
         
         print(f"✓ Reports directory: {self.reports_dir}/")
-        print(f"✓ Generating reports for all unique fraud patterns")
         print()
     
-    def get_reason_signature(self, reasons):
-        """Extract unique fraud pattern signature from reasons"""
-        reason_parts = reasons.split('|')
-        normalized = tuple(sorted([r.split('(')[0] for r in reason_parts]))
+    def get_pattern_signature(self, reasons):
+        """Extract unique pattern from reasons"""
+        if not reasons:
+            return tuple()
+        parts = reasons.split('|')
+        normalized = tuple(sorted([r.split('(')[0] for r in parts]))
         return normalized
     
     def decode_fraud_indicators(self, reasons, tier):
         """Decode fraud indicators into human-readable explanations"""
         
-        # Parse the reasons string
         indicators = reasons.split('|')
         
         # Comprehensive indicator dictionary
@@ -383,7 +379,6 @@ class FraudReportGenerator:
         severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0}
         
         for indicator in indicators:
-            # Extract base indicator and value
             parts = indicator.split('(')
             base = parts[0]
             value = parts[1].rstrip(')') if len(parts) > 1 else None
@@ -403,7 +398,6 @@ class FraudReportGenerator:
                 }
                 decoded.append(decoded_info)
             else:
-                # Handle ML scores
                 if base.startswith('ML'):
                     score = base[2:] if len(base) > 2 else value
                     decoded.append({
@@ -416,7 +410,6 @@ class FraudReportGenerator:
                         'risk': 'AI detected behavioral patterns inconsistent with legitimate transactions'
                     })
                 else:
-                    # Unknown indicator
                     decoded.append({
                         'indicator': indicator,
                         'base': base,
@@ -453,18 +446,23 @@ class FraudReportGenerator:
             'total_indicators': len(decoded)
         }
     
-    async def save_report_pdf(self, alert_data, indicator_analysis):
-        """Generate professional bank-grade PDF report"""
+    def generate_pdf(self, alert_data):
+        """Generate professional PDF report with comprehensive analysis"""
+        if not PDF_AVAILABLE:
+            return None
+        
         try:
+            # Decode fraud indicators
+            indicator_analysis = self.decode_fraud_indicators(alert_data['reasons'], alert_data['tier'])
+            
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            reason_sig = ''.join(alert_data['reasons'].split('|')[0][:20].split('(')[0])
+            reason_sig = ''.join(alert_data['reasons'].split('|')[0][:20].split('(')[0]) if alert_data['reasons'] else 'UNKNOWN'
             
             filename = f"FRAUD_{timestamp}_{reason_sig}_CC{str(alert_data['cc_num'])[-4:]}.pdf"
-            filepath = os.path.join(self.reports_dir, filename)
+            filepath = self.reports_dir / filename
             
-            # Create PDF with custom canvas for headers/footers
             doc = SimpleDocTemplate(
-                filepath, 
+                str(filepath), 
                 pagesize=letter,
                 topMargin=1*inch,
                 bottomMargin=0.9*inch,
@@ -475,18 +473,7 @@ class FraudReportGenerator:
             story = []
             styles = getSampleStyleSheet()
             
-            # ===== CUSTOM STYLES =====
-            title_style = ParagraphStyle(
-                'ReportTitle',
-                parent=styles['Heading1'],
-                fontSize=24,
-                textColor=colors.HexColor('#1a1a2e'),
-                spaceAfter=6,
-                alignment=TA_CENTER,
-                fontName='Helvetica-Bold',
-                leading=28
-            )
-            
+            # Custom styles
             section_header_style = ParagraphStyle(
                 'SectionHeader',
                 parent=styles['Heading2'],
@@ -529,7 +516,7 @@ class FraudReportGenerator:
                 spaceAfter=6
             )
             
-            # ===== STATUS BOX =====
+            # Status box
             fraud_status = 'CONFIRMED FRAUD' if alert_data['actual_fraud'] == 1 else 'UNDER INVESTIGATION'
             status_color = colors.HexColor('#c41e3a') if alert_data['actual_fraud'] == 1 else colors.HexColor('#e67e22')
             
@@ -537,7 +524,7 @@ class FraudReportGenerator:
             story.append(StatusBox(fraud_status, status_color))
             story.append(Spacer(1, 0.3*inch))
             
-            # ===== REPORT METADATA =====
+            # Metadata
             case_id = f"FR-{timestamp}-{alert_data['trans_num']}"
             
             metadata_data = [
@@ -556,20 +543,16 @@ class FraudReportGenerator:
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('TOPPADDING', (0, 0), (-1, -1), 8),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('LEFTPADDING', (0, 0), (-1, -1), 10),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 10),
                 ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#dee2e6')),
-                ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.HexColor('#dee2e6')),
             ]))
             
             story.append(metadata_table)
             story.append(Spacer(1, 0.25*inch))
             
-            # ===== RISK SCORE SECTION =====
+            # ===== RISK ASSESSMENT SECTION =====
             story.append(Paragraph('RISK ASSESSMENT', section_header_style))
             story.append(Spacer(1, 0.1*inch))
             
-            # Risk score visualization
             risk_score = alert_data['risk_score']
             risk_level = 'EXTREME' if risk_score >= 90 else 'CRITICAL' if risk_score >= 80 else 'HIGH' if risk_score >= 70 else 'ELEVATED'
             risk_color = colors.HexColor('#8b0000') if risk_score >= 90 else colors.HexColor('#c41e3a') if risk_score >= 80 else colors.HexColor('#e67e22') if risk_score >= 70 else colors.HexColor('#f39c12')
@@ -579,21 +562,19 @@ class FraudReportGenerator:
                  Paragraph(f'<font size="20" color="{risk_color.hexval()}"><b>{risk_score}</b></font><font size="14">/100</font>', body_style),
                  Paragraph(f'<font color="{risk_color.hexval()}"><b>{risk_level} RISK</b></font>', body_style)],
                 [Paragraph('<b>Confidence Level</b>', body_style), 
-                 Paragraph(f'{alert_data["confidence"]}%', body_style),
+                 Paragraph(f'{alert_data.get("confidence", "N/A")}%', body_style),
                  Paragraph(f'<b>{indicator_analysis["total_indicators"]}</b> Indicators', body_style)],
             ]
             
             risk_table = Table(risk_data, colWidths=[2*inch, 2*inch, 2*inch])
             risk_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#fff5f5')),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('ALIGN', (1, 0), (1, 0), 'CENTER'),
                 ('ALIGN', (2, 0), (2, 0), 'CENTER'),
                 ('TOPPADDING', (0, 0), (-1, -1), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
                 ('BOX', (0, 0), (-1, -1), 2, risk_color),
-                ('LINEBELOW', (0, 0), (-1, 0), 1, colors.HexColor('#dee2e6')),
             ]))
             
             story.append(risk_table)
@@ -619,18 +600,16 @@ class FraudReportGenerator:
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('TOPPADDING', (0, 0), (-1, -1), 7),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
                 ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#dee2e6')),
-                ('LINEBELOW', (0, 0), (-1, 0), 1.5, colors.HexColor('#c41e3a')),
             ]))
             
             story.append(severity_table)
             story.append(Spacer(1, 0.2*inch))
             
-            # ===== TRANSACTION DETAILS =====
+            # Transaction details
             story.append(Paragraph('TRANSACTION DETAILS', section_header_style))
             story.append(Spacer(1, 0.1*inch))
             
@@ -653,13 +632,10 @@ class FraudReportGenerator:
                 ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
                 ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#f8f9fa')),
                 ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fafafa')]),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('TOPPADDING', (0, 0), (-1, -1), 8),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
                 ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#dee2e6')),
-                ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#c41e3a')),
-                ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.HexColor('#e0e0e0')),
             ]))
             
             story.append(trans_table)
@@ -698,14 +674,10 @@ class FraudReportGenerator:
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fffaf0')]),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('TOPPADDING', (0, 0), (-1, -1), 6),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('LEFTPADDING', (0, 0), (-1, -1), 6),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 6),
                 ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#c41e3a')),
-                ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#8b0000')),
                 ('INNERGRID', (0, 1), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
             ]))
             
@@ -714,7 +686,7 @@ class FraudReportGenerator:
             
             # Risk explanations
             story.append(Paragraph('Risk Assessment Details', subsection_style))
-            for ind in indicator_analysis['decoded_indicators'][:5]:  # Show top 5
+            for ind in indicator_analysis['decoded_indicators'][:5]:
                 story.append(Paragraph(f'<b>• {ind["name"]}:</b> {ind["risk"]}', bullet_style))
             
             story.append(Spacer(1, 0.2*inch))
@@ -806,8 +778,6 @@ class FraudReportGenerator:
                 ('TOPPADDING', (0, 0), (-1, -1), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
                 ('BOX', (0, 0), (-1, -1), 1.5, colors.HexColor('#dee2e6')),
-                ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#c41e3a')),
-                ('LINEBELOW', (0, 0), (-1, -2), 0.5, colors.HexColor('#e0e0e0')),
             ]))
             
             story.append(mitigation_table)
@@ -894,201 +864,121 @@ class FraudReportGenerator:
             # Build PDF with custom canvas
             doc.build(story, canvasmaker=HeaderFooterCanvas)
             
-            print(f"   ✓ Professional PDF generated: {filename}")
-            return filepath
+            print(f"   ✓ PDF generated: {filename}")
+            return str(filepath)
             
         except Exception as e:
             print(f"   ❌ Error generating PDF: {e}")
             import traceback
             traceback.print_exc()
             return None
+
+
+# Global generator instance
+generator = ReportGenerator()
+
+
+# ============================================================================
+# PATHWAY SCHEMA
+# ============================================================================
+
+class AlertSchema(pw.Schema):
+    alert_json: str
+
+
+# ============================================================================
+# REPORT PROCESSOR UDF
+# ============================================================================
+
+@pw.udf
+def process_alert(alert_json: str) -> str:
+    """Process fraud alert and generate report if needed"""
     
-    async def save_report_markdown(self, alert_data, indicator_analysis):
-        """Fallback: Save report as Markdown if PDF fails"""
-        try:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            reason_sig = ''.join(alert_data['reasons'].split('|')[0][:20].split('(')[0])
-            
-            filename = f"FRAUD_{timestamp}_{reason_sig}_CC{str(alert_data['cc_num'])[-4:]}.md"
-            filepath = os.path.join(self.reports_dir, filename)
-            
-            # Build decoded indicators section
-            decoded_indicators_text = '\n'.join([
-                f"- **{ind['name']}** [{ind['severity']}]: {ind['description']}\n  - Risk: {ind['risk']}"
-                for ind in indicator_analysis['decoded_indicators']
-            ])
-            
-            # Create comprehensive report document
-            full_report = f"""# FRAUD INVESTIGATION REPORT
-
-**Report ID:** FR-{timestamp}-{alert_data['trans_num']}  
-**Generated:** {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}  
-**Classification:** {'⚠️ CONFIRMED FRAUD' if alert_data['actual_fraud'] == 1 else '🔍 UNDER INVESTIGATION'}  
-**Detection Tier:** {indicator_analysis['tier_info']['name']}
-
----
-
-## ALERT METADATA
-
-| Field | Value |
-|-------|-------|
-| Transaction ID | {alert_data['trans_num']} |
-| Customer ID | ****-****-****-{str(alert_data['cc_num'])[-4:]} |
-| Risk Score | **{alert_data['risk_score']}/100** |
-| Confidence | {alert_data['confidence']}% |
-| Detection Tier | Tier {alert_data['tier']} |
-| ML Score | {alert_data.get('ml_score', 'N/A')} |
-| Indicators Count | {indicator_analysis['total_indicators']} |
-| Critical Indicators | {indicator_analysis['severity_summary']['CRITICAL']} |
-
-## TRANSACTION DETAILS
-
-| Field | Value |
-|-------|-------|
-| Merchant | {alert_data['merchant']} |
-| Category | {alert_data['category']} |
-| Amount | ${alert_data['amt']:,.2f} |
-| Location | {alert_data['location']} |
-
-## FRAUD INDICATORS DETECTED
-
-**Raw Indicators:** `{alert_data['reasons']}`
-
-**Decoded Analysis:**
-
-{decoded_indicators_text}
-
-**Severity Breakdown:**
-- 🔴 CRITICAL: {indicator_analysis['severity_summary']['CRITICAL']}
-- 🟠 HIGH: {indicator_analysis['severity_summary']['HIGH']}
-- 🟡 MEDIUM: {indicator_analysis['severity_summary']['MEDIUM']}
-
----
-
-## DETECTION METHODOLOGY
-
-**{indicator_analysis['tier_info']['name']}**
-
-{indicator_analysis['tier_info']['description']}
-
-**Recommended Action:** {indicator_analysis['tier_info']['action']}
-
----
-
-## INVESTIGATION PROTOCOL
-
-### Immediate Actions (0-4 Hours)
-- Attempt customer contact via all verified phone numbers and email addresses
-- Place temporary authorization hold on card if transaction not yet settled
-- Review account for additional suspicious transactions in past 72 hours
-- Flag account for enhanced monitoring and velocity controls
-
-### Customer Verification Questions
-- Did you authorize a transaction at {alert_data['merchant']} for ${alert_data['amt']:.2f}?
-- Have you recently traveled to {alert_data['location']}?
-- Do you currently have physical possession of your payment card?
-
----
-
-**Report Generated by:** Intelligent Fraud Report Generator v3.0  
-**Powered by:** Real-time Streaming Analytics  
-**Disclaimer:** This report is for investigative purposes. Final determination requires human review.
-"""
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(full_report)
-            
-            print(f"   ✓ Markdown file saved: {filename}")
-            return filepath
-            
-        except Exception as e:
-            print(f"   ❌ Error in save_report_markdown: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
-    
-    async def process_alert(self, alert_data):
-        """Process incoming fraud alert and generate report if needed"""
-        self.total_alerts += 1
+    try:
+        # Parse JSON string
+        alert_data = json.loads(alert_json)
         
-        reason_sig = self.get_reason_signature(alert_data['reasons'])
+        # Check if it's an alert
+        if not alert_data.get('is_alert', False):
+            return json.dumps({'processed': False, 'reason': 'not_alert'})
         
-        if reason_sig not in self.seen_reasons:
-            self.seen_reasons.add(reason_sig)
-            self.report_count += 1
+        generator.total_alerts += 1
+        
+        pattern_sig = generator.get_pattern_signature(alert_data.get('reasons', ''))
+        
+        if pattern_sig not in generator.seen_patterns:
+            generator.seen_patterns.add(pattern_sig)
+            generator.report_count += 1
             
             print(f"\n{'='*60}")
-            print(f"🎯 NEW FRAUD PATTERN DETECTED #{self.report_count}")
+            print(f"🎯 NEW FRAUD PATTERN DETECTED #{generator.report_count}")
             print(f"{'='*60}")
             print(f"Transaction: {alert_data['trans_num']}")
             print(f"Customer: ****{str(alert_data['cc_num'])[-4:]}")
-            print(f"Pattern: {alert_data['reasons']}")
+            print(f"Pattern: {alert_data.get('reasons', 'N/A')}")
             print(f"Amount: ${alert_data['amt']:.2f}")
             print(f"Risk: {alert_data['risk_score']}/100")
             print()
-            print("📝 Generating professional fraud report...")
+            print("📝 Generating comprehensive fraud report...")
             
-            try:
-                indicator_analysis = self.decode_fraud_indicators(alert_data['reasons'], alert_data['tier'])
-                print("   ✓ Fraud indicators analyzed successfully!")
-            except Exception as e:
-                print(f"   ❌ Error analyzing indicators: {e}")
-                return
+            filepath = generator.generate_pdf(alert_data)
             
-            try:
-                if PDF_AVAILABLE:
-                    filepath = await self.save_report_pdf(alert_data, indicator_analysis)
-                    if filepath:
-                        print(f"📄 Professional PDF Report: {os.path.basename(filepath)}")
-                else:
-                    filepath = await self.save_report_markdown(alert_data, indicator_analysis)
-                    if filepath:
-                        print(f"📄 Markdown Report: {os.path.basename(filepath)}")
+            if filepath:
+                print(f"✅ Report #{generator.report_count} completed!")
+                print(f"   Status: {'CONFIRMED FRAUD ❌' if alert_data['actual_fraud'] == 1 else 'FALSE POSITIVE ✓'}")
+                print()
                 
-                if filepath:
-                    print(f"✅ Report #{self.report_count} completed!")
-                    print(f"   Status: {'CONFIRMED FRAUD ❌' if alert_data['actual_fraud'] == 1 else 'FALSE POSITIVE ✓'}")
-                    print()
-            except Exception as e:
-                print(f"   ❌ Error saving report: {e}")
-                return
-        else:
-            if self.total_alerts % 50 == 0:
-                print(f"📊 Progress: {self.total_alerts} alerts | "
-                      f"{self.report_count} unique patterns")
-
-
-async def main():
-    generator = FraudReportGenerator()
+                return json.dumps({
+                    'processed': True,
+                    'report_path': filepath,
+                    'pattern': alert_data.get('reasons', '')
+                })
+        
+        if generator.total_alerts % 50 == 0:
+            print(f"📊 Progress: {generator.total_alerts} alerts | "
+                  f"{generator.report_count} unique patterns")
+        
+        return json.dumps({'processed': False, 'reason': 'duplicate_pattern'})
     
-    nc = NATS()
-    try:
-        await nc.connect(servers=["nats://localhost:4222"], max_reconnect_attempts=60)
-        print("✓ Connected to NATS broker")
     except Exception as e:
-        print(f"❌ NATS connection failed: {e}")
-        return
+        print(f"[ERROR] {e}")
+        return json.dumps({'processed': False, 'error': str(e)})
+
+
+# ============================================================================
+# MAIN REPORT GENERATOR
+# ============================================================================
+
+def run_report_generator():
+    """Main report generation pipeline"""
     
-    print("✓ Subscribed to: fraud.alerts")
-    print()
     print("─" * 60)
     print("  🚀 FRAUD REPORT GENERATOR ACTIVE")
     print("─" * 60)
     print("  Listening for unique fraud patterns...")
     print()
     
-    async def alert_handler(msg):
-        try:
-            alert_data = json.loads(msg.data.decode())
-            await generator.process_alert(alert_data)
-        except Exception as e:
-            print(f"❌ Error: {e}")
+    # Read alerts from detector
+    alerts = pw.io.jsonlines.read(
+        'pathway_streams/fraud_alerts.jsonl',
+        schema=AlertSchema,
+        mode='streaming'
+    )
     
-    await nc.subscribe("fraud.alerts", cb=alert_handler)
+    print("✓ Subscribed to: pathway_streams/fraud_alerts.jsonl")
+    print()
     
+    # Process alerts
+    reports = alerts.select(
+        report_result=process_alert(pw.this.alert_json)
+    )
+    
+    # Write report metadata
+    pw.io.jsonlines.write(reports, 'pathway_streams/generated_reports.jsonl')
+    
+    # Run pipeline
     try:
-        while True:
-            await asyncio.sleep(1)
+        pw.run()
     except KeyboardInterrupt:
         print("\n\n═══════════════════════════════════════════════════════════")
         print("    SHUTDOWN COMPLETE")
@@ -1097,11 +987,7 @@ async def main():
         print(f"Unique Patterns Found: {generator.report_count}")
         print(f"Reports Directory: {generator.reports_dir}/")
         print()
-    finally:
-        try:
-            await nc.close()
-        except:
-            pass
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_report_generator()

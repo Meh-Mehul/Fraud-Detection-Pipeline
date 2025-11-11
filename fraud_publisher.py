@@ -5,6 +5,7 @@ from nats.aio.client import Client as NATS
 from datetime import datetime
 import time
 
+
 async def main():
     # Configuration
     TARGET_TPS = 1000  # Transactions per second (realistic bank load)
