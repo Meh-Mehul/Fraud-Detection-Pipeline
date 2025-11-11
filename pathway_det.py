@@ -1,13 +1,28 @@
 """
-PATHWAY-NATIVE FRAUD DETECTOR v7.0 - FIXED VERSION
-Leverages Pathway's incremental computation and joins
+PATHWAY-NATIVE FRAUD DETECTOR v8.1 - WITH DEDUPLICATION FIX
+Prevents duplicate transaction processing in incremental updates
 """
 
 import pathway as pw
 import math
 import json
+import pickle
 from datetime import datetime
+from pathlib import Path
 from river import tree, preprocessing, compose
+
+
+# ============================================================================
+# PERSISTENCE CONFIGURATION
+# ============================================================================
+
+PERSISTENCE_DIR = Path("pathway_persistence")
+PERSISTENCE_DIR.mkdir(exist_ok=True)
+
+CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
+    pw.persistence.Backend.filesystem(str(PERSISTENCE_DIR / "checkpoints")),
+    snapshot_interval_ms=10000
+)
 
 
 # ============================================================================
@@ -90,7 +105,7 @@ def calculate_std(arr) -> float:
 
 @pw.udf
 def parse_and_filter_alert(alert_json: str):
-    """Parse JSON and return alert_json if it's an alert, otherwise return None"""
+    """Parse JSON and return alert_json if it's an alert"""
     try:
         data = json.loads(alert_json)
         if data.get('is_alert', False):
@@ -101,12 +116,54 @@ def parse_and_filter_alert(alert_json: str):
 
 
 # ============================================================================
-# ML MODEL MANAGEMENT
+# ML MODEL MANAGEMENT WITH DEDUPLICATION TRACKING
 # ============================================================================
 
 class MLModelState:
-    """Global ML models"""
+    """ML models with persistence and deduplication support"""
+    
     def __init__(self):
+        self.model_path = PERSISTENCE_DIR / "ml_models.pkl"
+        self.stats_path = PERSISTENCE_DIR / "stats.json"
+        
+        # CRITICAL: Track processed transactions to prevent duplicates
+        self.processed_transactions = set()
+        self.processed_path = PERSISTENCE_DIR / "processed_trans.json"
+        
+        # Try to load existing models
+        if self.model_path.exists():
+            print("🔄 Loading saved ML models...")
+            try:
+                with open(self.model_path, 'rb') as f:
+                    saved = pickle.load(f)
+                    self.model_main = saved['model_main']
+                    self.model_validator = saved['model_validator']
+                print("✓ ML models restored from disk")
+            except Exception as e:
+                print(f"⚠️  Could not load models: {e}, creating new ones")
+                self._init_new_models()
+        else:
+            self._init_new_models()
+        
+        # Load stats
+        if self.stats_path.exists():
+            with open(self.stats_path, 'r') as f:
+                self.stats = json.load(f)
+            print(f"✓ Stats restored: {self.stats['total']:,} transactions processed")
+        else:
+            self.stats = {'total': 0, 'alerts': 0, 'tier1': 0, 'tier2': 0, 'tier3': 0}
+        
+        # Load processed transactions
+        if self.processed_path.exists():
+            with open(self.processed_path, 'r') as f:
+                self.processed_transactions = set(json.load(f))
+            print(f"✓ Loaded {len(self.processed_transactions):,} processed transaction IDs")
+        
+        self.last_save_time = datetime.now()
+        self.save_interval = 60
+    
+    def _init_new_models(self):
+        """Initialize new ML models"""
         self.model_main = compose.Pipeline(
             preprocessing.StandardScaler(),
             tree.HoeffdingAdaptiveTreeClassifier(
@@ -121,8 +178,48 @@ class MLModelState:
             delta=0.0001,
             seed=123
         )
-        
-        self.stats = {'total': 0, 'alerts': 0, 'tier1': 0, 'tier2': 0, 'tier3': 0}
+        print("✓ New ML models initialized")
+    
+    def is_already_processed(self, trans_num: str) -> bool:
+        """Check if transaction already processed"""
+        return trans_num in self.processed_transactions
+    
+    def mark_processed(self, trans_num: str):
+        """Mark transaction as processed"""
+        self.processed_transactions.add(trans_num)
+    
+    def save_models(self, force=False):
+        """Periodically save models to disk"""
+        now = datetime.now()
+        if force or (now - self.last_save_time).total_seconds() >= self.save_interval:
+            try:
+                # Save models
+                with open(self.model_path, 'wb') as f:
+                    pickle.dump({
+                        'model_main': self.model_main,
+                        'model_validator': self.model_validator
+                    }, f)
+                
+                # Save stats
+                with open(self.stats_path, 'w') as f:
+                    json.dump(self.stats, f)
+                
+                # Save processed transactions (keep only last 100k to prevent unbounded growth)
+                processed_list = list(self.processed_transactions)
+                if len(processed_list) > 100000:
+                    processed_list = processed_list[-100000:]
+                    self.processed_transactions = set(processed_list)
+                
+                with open(self.processed_path, 'w') as f:
+                    json.dump(processed_list, f)
+                
+                self.last_save_time = now
+                
+                if self.stats['total'] % 50000 == 0 and self.stats['total'] > 0:
+                    print(f"💾 Models and stats saved (Total: {self.stats['total']:,})")
+            except Exception as e:
+                print(f"⚠️  Could not save models: {e}")
+
 
 ml_state = MLModelState()
 
@@ -132,16 +229,21 @@ def comprehensive_fraud_detection(
     trans_num: str, cc_num: int, merchant: str, category: str,
     amt: float, lat: float, long: float, merch_lat: float, merch_long: float,
     unix_time: int, city: str, state: str, is_fraud: int, city_pop: int,
-    # Pathway-computed features
     customer_avg_amt: float, customer_std_amt: float, customer_txn_count: int,
     customer_fraud_history: int, customer_avg_dist: float, customer_std_dist: float,
     merch_fraud_rate: float, merch_total: int,
     cat_fraud_rate: float,
     distance: float, hour: int, is_online: int, is_late: int
 ) -> str:
-    """Comprehensive fraud detection with Pathway-enriched features"""
+    """Comprehensive fraud detection with deduplication"""
     
     try:
+        # CRITICAL: Check if already processed (prevents duplicates from re-evaluations)
+        if ml_state.is_already_processed(trans_num):
+            return json.dumps({'is_alert': False, 'duplicate': True})
+        
+        # Mark as processed immediately
+        ml_state.mark_processed(trans_num)
         ml_state.stats['total'] += 1
         
         # Training phase
@@ -158,16 +260,16 @@ def comprehensive_fraud_detection(
             
             if ml_state.stats['total'] % 10000 == 0:
                 print(f"[TRAIN] {ml_state.stats['total']:,}")
+                ml_state.save_models()
             
             return json.dumps({'is_alert': False, 'training': True})
         
-        # ===== FEATURE ENGINEERING =====
+        # Feature engineering
         z_amt = (amt - customer_avg_amt) / customer_std_amt if customer_std_amt > 0 else 0
         amt_ratio = amt / customer_avg_amt if customer_avg_amt > 0 else 1
-        
         z_dist = (distance - customer_avg_dist) / customer_std_dist if customer_std_dist > 0 else 0
         
-        # ===== ML PREDICTION =====
+        # ML prediction
         feats = {
             'amt': float(amt), 'z_amt': float(z_amt), 'amt_ratio': float(amt_ratio),
             'dist': float(distance), 'z_dist': float(z_dist),
@@ -192,15 +294,14 @@ def comprehensive_fraud_detection(
         ml_score = (ml_score1 + ml_score2) / 2
         ml_agreement = abs(ml_score1 - ml_score2) < 20
         
-        # ===== TIER-BASED DETECTION =====
+        # Tier-based detection (same logic as before)
         is_suspicious = False
         tier = 0
         reasons = []
         confidence = 0
         
-        # TIER 1: Absolute certainty
+        # TIER 1
         extreme_signals = []
-        
         if z_amt > 4.5:
             extreme_signals.append(f"MASSIVE_AMT(Z={z_amt:.1f})")
         elif z_amt > 3.8 and amt > 500:
@@ -217,7 +318,6 @@ def comprehensive_fraud_detection(
         if customer_fraud_history >= 3:
             extreme_signals.append(f"FRAUD_HISTORY({customer_fraud_history})")
         
-        # Tier 1 decision
         if len(extreme_signals) >= 2:
             is_suspicious = True
             tier = 1
@@ -231,7 +331,7 @@ def comprehensive_fraud_detection(
             ml_state.stats['tier1'] += 1
             reasons = extreme_signals + [f"ML{ml_score:.0f}"]
         
-        # TIER 2: Strong evidence
+        # TIER 2
         if not is_suspicious:
             tier2_score = 0
             tier2_reasons = []
@@ -279,7 +379,7 @@ def comprehensive_fraud_detection(
                 ml_state.stats['tier2'] += 1
                 reasons = tier2_reasons[:4]
         
-        # TIER 3: ML-based
+        # TIER 3
         if not is_suspicious:
             if ml_score >= 82 and ml_agreement:
                 support_count = sum([
@@ -305,9 +405,10 @@ def comprehensive_fraud_detection(
         except:
             pass
         
-        # Progress reporting
+        # Periodic save and progress
         if ml_state.stats['total'] % 10000 == 0:
-            print(f"[PROGRESS] Processed: {ml_state.stats['total']:,} | Alerts: {ml_state.stats['alerts']:,} | T1:{ml_state.stats['tier1']} T2:{ml_state.stats['tier2']} T3:{ml_state.stats['tier3']}")
+            print(f"[PROGRESS] {ml_state.stats['total']:,} | Alerts: {ml_state.stats['alerts']:,}")
+            ml_state.save_models()
         
         # Publish alert
         if is_suspicious:
@@ -344,27 +445,29 @@ def comprehensive_fraud_detection(
 # ============================================================================
 
 def run_detector():
-    """Pathway-native fraud detection"""
+    """Pathway-native fraud detection with deduplication"""
     
     print("═══════════════════════════════════════════════════════════")
-    print("  PATHWAY-NATIVE FRAUD DETECTOR v7.0 - FIXED")
+    print("  PATHWAY-NATIVE FRAUD DETECTOR v8.1 - DEDUP FIX")
     print("═══════════════════════════════════════════════════════════")
     print()
-    print("  ✓ Incremental merchant/customer profiling")
-    print("  ✓ Declarative joins for enrichment")
-    print("  ✓ Dual Hoeffding Adaptive Trees")
-    print("  ✓ Fixed alert filtering")
+    print("  ✓ State persistence enabled")
+    print("  ✓ Deduplication active")
+    print("  ✓ ML model checkpointing")
+    print("  ✓ Crash recovery support")
     print()
     
-    # ========== READ TRANSACTIONS ==========
+    # Read transactions with persistence
     transactions = pw.io.jsonlines.read(
         'pathway_streams/transactions.jsonl',
         schema=TransactionSchema,
-        mode='streaming'
+        mode='streaming',
+        persistent_id="transactions_input"
     )
     
-    print("✓ Connected to transaction stream")
-    print("✓ Building incremental profiles...")
+    print("✓ Connected to transaction stream (persistent)")
+    print(f"✓ Checkpoint dir: {PERSISTENCE_DIR / 'checkpoints'}")
+    print(f"✓ Processed tracking: {len(ml_state.processed_transactions):,} IDs")
     print()
     
     # Add computed fields
@@ -377,7 +480,7 @@ def run_detector():
         is_late=is_late_night(extract_hour(pw.this.unix_time))
     )
     
-    # ========== MERCHANT STATISTICS (Incremental with Pathway) ==========
+    # Merchant statistics
     merchant_stats = transactions.groupby(pw.this.merchant).reduce(
         merchant=pw.this.merchant,
         total=pw.reducers.count(),
@@ -390,7 +493,7 @@ def run_detector():
                            pw.this.fraud_count, pw.this.total)
     )
     
-    # ========== CATEGORY STATISTICS (Incremental) ==========
+    # Category statistics
     category_stats = transactions.groupby(pw.this.category).reduce(
         category=pw.this.category,
         total=pw.reducers.count(),
@@ -401,7 +504,7 @@ def run_detector():
                            pw.this.fraud_count, pw.this.total)
     )
     
-    # ========== CUSTOMER PROFILES (Incremental) ==========
+    # Customer profiles
     customer_stats = transactions.groupby(pw.this.cc_num).reduce(
         cc_num=pw.this.cc_num,
         txn_count=pw.reducers.count(),
@@ -411,10 +514,7 @@ def run_detector():
         avg_dist=pw.reducers.avg(pw.this.distance),
         dist_array=pw.reducers.ndarray(pw.this.distance),
         fraud_history=pw.reducers.sum(pw.this.is_fraud)
-    )
-    
-    # Calculate std from arrays
-    customer_stats = customer_stats.select(
+    ).select(
         cc_num=pw.this.cc_num,
         txn_count=pw.this.txn_count,
         avg_amt=pw.this.avg_amt,
@@ -425,10 +525,9 @@ def run_detector():
         fraud_history=pw.this.fraud_history
     )
     
-    # ========== JOIN EVERYTHING (Pathway's Strength!) ==========
+    # Join everything
     enriched = transactions
     
-    # Join merchant stats
     enriched = enriched.join_left(
         merchant_stats,
         enriched.merchant == merchant_stats.merchant
@@ -438,7 +537,6 @@ def run_detector():
         merch_total=pw.require(pw.right.total, pw.right.total, 0)
     )
     
-    # Join category stats
     enriched = enriched.join_left(
         category_stats,
         enriched.category == category_stats.category
@@ -447,7 +545,6 @@ def run_detector():
         cat_fraud_rate=pw.require(pw.right.fraud_rate, pw.right.fraud_rate, 0.0)
     )
     
-    # Join customer stats
     enriched = enriched.join_left(
         customer_stats,
         enriched.cc_num == customer_stats.cc_num
@@ -461,8 +558,7 @@ def run_detector():
         customer_std_dist=pw.require(pw.right.std_dist, pw.right.std_dist, 0.0)
     )
     
-    # ========== FRAUD DETECTION ==========
-    # Apply fraud detection to all transactions
+    # Fraud detection
     results = enriched.select(
         alert_json=comprehensive_fraud_detection(
             pw.this.trans_num, pw.this.cc_num, pw.this.merchant, pw.this.category,
@@ -476,29 +572,28 @@ def run_detector():
         )
     )
     
-    # ========== OUTPUT ==========
-    # Write all results for debugging
+    # Output
     pw.io.jsonlines.write(results, 'pathway_streams/all_results.jsonl')
     
-    # Filter to only alerts - return None for non-alerts, JSON string for alerts
     alerts_filtered = results.select(
         alert_json=parse_and_filter_alert(pw.this.alert_json)
     )
     
-    # Filter out None values using is_not_none() like the working example
     alerts = alerts_filtered.filter(pw.this.alert_json.is_not_none())
     
-    # Write only alerts
     pw.io.jsonlines.write(alerts, 'pathway_streams/fraud_alerts.jsonl')
     
-    print("🎯 Pathway-native pipeline active...")
-    print("   Alerts Output: pathway_streams/fraud_alerts.jsonl")
-    print("   Debug Output: pathway_streams/all_results.jsonl")
+    print("🎯 Pathway pipeline active with deduplication...")
+    print("   Alerts: pathway_streams/fraud_alerts.jsonl")
+    print("   Debug: pathway_streams/all_results.jsonl")
     print("   Press Ctrl+C to stop")
     print()
     
-    # Run pipeline
-    pw.run()
+    # Run with persistence config
+    pw.run(
+        persistence_config=CHECKPOINT_CONFIG,
+        monitoring_level=pw.MonitoringLevel.NONE
+    )
 
 
 if __name__ == "__main__":
@@ -510,17 +605,21 @@ if __name__ == "__main__":
     
     def signal_handler(sig, frame):
         print("\n\n═══════════════════════════════════════════════════════════")
-        print("    DETECTOR SHUTDOWN")
+        print("    DETECTOR SHUTDOWN - SAVING STATE...")
         print("═══════════════════════════════════════════════════════════")
+        
+        ml_state.save_models(force=True)
+        
         print(f"Total Processed: {ml_state.stats['total']:,}")
+        print(f"Unique Transactions: {len(ml_state.processed_transactions):,}")
         print(f"Alerts Generated: {ml_state.stats['alerts']:,}")
         print(f"  - Tier 1: {ml_state.stats['tier1']:,}")
         print(f"  - Tier 2: {ml_state.stats['tier2']:,}")
         print(f"  - Tier 3: {ml_state.stats['tier3']:,}")
+        print(f"💾 State saved to: {PERSISTENCE_DIR}/")
         print("═══════════════════════════════════════════════════════════")
         sys.exit(0)
     
-    # Register signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
     
     try:
@@ -529,5 +628,6 @@ if __name__ == "__main__":
         signal_handler(None, None)
     except Exception as e:
         print(f"\n❌ Error: {e}")
+        ml_state.save_models(force=True)
         import traceback
         traceback.print_exc()
