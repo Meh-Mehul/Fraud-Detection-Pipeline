@@ -1,0 +1,83 @@
+# ===============================
+#  Fraud Detection Pipeline - .gitignore
+# ===============================
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ---- Environments ----
+.env
+.env.*
+.venv/
+venv/
+env/
+ENV/
+*.sqlite3
+*.db
+
+# ---- Logs & Caches ----
+*.log
+logs/
+*.pid
+*.seed
+.cache/
+*.tmp
+tmp/
+*.bak
+.DS_Store
+
+# ---- Data Files ----
+data/
+datasets/
+*.csv
+*.parquet
+*.jsonl
+*.xlsx
+*.zip
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- IDEs ----
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Pathway ----
+storage.db
+recovery_storage.db
+pathway_storage/
+persistent_data/
+fraud_reports/
+
+# ---- Node / Frontend (if used) ----
+node_modules/
+package-lock.json
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# ---- Misc ----
+__MACOSX/
+*.swp
+*.swo
+*.orig
+
+# Large datasets
+fraudTrain.csv
+fraudTest.csv
+*.csv
