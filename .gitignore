@@ -61,6 +61,8 @@ desktop.ini
 storage.db
 recovery_storage.db
 pathway_storage/
+pathway_persistence/
+nats*
 persistent_data/
 fraud_reports/
 

@@ -1,4 +1,4 @@
-from publisher.pathway_nats_pub import run_publisher
+from publisher.pathway_nats_stream import run_publisher
 ## This file starts the publisher which simultates live transaction stream
 if __name__ == "__main__":
     try:
