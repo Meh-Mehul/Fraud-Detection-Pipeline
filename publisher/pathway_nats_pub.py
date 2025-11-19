@@ -46,7 +46,7 @@ def run_publisher():
     print()
     
     transactions = pw.io.csv.read(
-        'fraudTrain.csv',
+        'fraud_stream.csv',
         schema=TransactionSchema,
         mode='streaming',
         autocommit_duration_ms=100

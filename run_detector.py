@@ -1,4 +1,4 @@
-from detector.pathway_nats_det import run_detector
+from detector.pathway_nats_det import run_detector, ml_state, PERSISTENCE_DIR
 
 ## Our prototype implementation of a Fraud detector on pathway
 ## it is trained online as well

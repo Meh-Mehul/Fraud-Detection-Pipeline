@@ -1,17 +1,23 @@
 import pathway as pw
-from datetime import datetime
 import time
-import shutil
 import threading
 
-# NATS Configuration
+# ───────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ───────────────────────────────────────────────────────────────
+
 NATS_URI = "nats://localhost:4222"
 NATS_TOPIC = "fraud.transactions"
 
 ORIGINAL_FILE = "fraudTrain.csv"
 TEMP_STREAM_FILE = "fraud_stream.csv"
 
-# Schema stays the same
+# SET YOUR SPEED HERE (Keep < 100 for pure file streaming)
+TARGET_TPS = 50 
+
+# ───────────────────────────────────────────────────────────────
+# SCHEMA
+# ───────────────────────────────────────────────────────────────
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
@@ -36,81 +42,84 @@ class TransactionSchema(pw.Schema):
     merch_long: float = pw.column_definition(dtype=float)
     is_fraud: int = pw.column_definition(dtype=int)
 
-
 # ───────────────────────────────────────────────────────────────
-# 1. STREAMING FILE WRITER
+# 1. PURE STREAMING WRITER (Row-by-Row)
 # ───────────────────────────────────────────────────────────────
 
-def append_to_stream_file():
-    """
-    Continuously append rows from fraudTrain.csv to a temporary streaming file.
-    Pathway watches this temp file and streams updates whenever new rows arrive.
-    """
+def append_to_stream_file(tps):
     print("⏳ Loading source file...")
     with open(ORIGINAL_FILE, "r") as f:
         lines = f.readlines()
 
     header = lines[0]
     rows = lines[1:]
+    total_rows = len(rows)
 
-    # Create / reset the temp stream file
+    # Reset file
     with open(TEMP_STREAM_FILE, "w") as f:
         f.write(header)
 
-    print(f"📄 Temporary stream file: {TEMP_STREAM_FILE}")
-    print("🔁 Starting periodic appending...")
+    # Calculate precise interval per transaction
+    interval = 1.0 / tps
+
+    print(f"🚀 Starting PURE streaming at {tps} TPS")
+    print(f"ℹ️  1 Transaction every {interval:.4f} seconds")
 
     idx = 0
-    total = len(rows)
-
+    
     while True:
-        # Append 1 line per second (or adjust rate)
+        loop_start = time.time()
+
+        # 1. Write exactly ONE row
+        current_row = rows[idx]
+        
         with open(TEMP_STREAM_FILE, "a") as f:
-            f.write(rows[idx])
-
-        print(f"→ Published row {idx+1}/{total}")
-
-        idx = (idx + 1) % total  # loop forever
-
-        time.sleep(0.2)  # adjust streaming speed here
+            f.write(current_row)
+        
+        # 2. Prepare next index
+        idx = (idx + 1) % total_rows
+        
+        # 3. Accurate Sleep (Drift Correction)
+        # We calculate how long the write took, and sleep only the remaining time
+        elapsed = time.time() - loop_start
+        sleep_time = interval - elapsed
+        
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+            
+        # Optional: Print every 10th row just to keep console clean
+        if idx % 10 == 0:
+            print(f"→ Transaction {idx} sent.", end='\r')
 
 
 # ───────────────────────────────────────────────────────────────
-# 2. PATHWAY STREAMER (READS ONLY TEMP FILE)
+# 2. PATHWAY STREAMER
 # ───────────────────────────────────────────────────────────────
 
 def run_publisher():
     print("═══════════════════════════════════════════════════════════")
-    print("    PATHWAY TRANSACTION PUBLISHER v8.0 - TRUE STREAMING")
+    print("    PATHWAY BANK SIMULATION - PURE STREAMING")
     print("═══════════════════════════════════════════════════════════")
-    print()
-    print(f"NATS URI  : {NATS_URI}")
-    print(f"Topic     : {NATS_TOPIC}")
-    print(f"Streaming : {TEMP_STREAM_FILE}")
+    print(f"Streaming File : {TEMP_STREAM_FILE}")
+    print(f"Target TPS     : {TARGET_TPS}")
     print()
 
-    # Start background appending thread
-    t = threading.Thread(target=append_to_stream_file, daemon=True)
+    # Start the writer thread
+    t = threading.Thread(target=append_to_stream_file, args=(TARGET_TPS,), daemon=True)
     t.start()
 
-    # Pathway watches only the temp file
+    # Pathway reads the stream
     transactions = pw.io.csv.read(
         TEMP_STREAM_FILE,
         schema=TransactionSchema,
         mode='streaming',
-        autocommit_duration_ms=200
+        autocommit_duration_ms=100 # Low latency commit
+        
     )
-
-    print("✓ Pathway streaming initialized")
-    print(f"✓ Output → NATS topic: {NATS_TOPIC}")
-    print("🚀 Live streaming active. CTRL+C to stop.")
-    print()
 
     pw.io.nats.write(transactions, uri=NATS_URI, topic=NATS_TOPIC)
 
     pw.run()
 
-
-# Run if executed directly
 if __name__ == "__main__":
     run_publisher()

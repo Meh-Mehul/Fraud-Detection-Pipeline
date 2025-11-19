@@ -249,7 +249,7 @@ def comprehensive_fraud_detection(
         ml_state.stats['total'] += 1
         
         # Training phase
-        if customer_txn_count < 20:
+        if customer_txn_count < 10:
             feats = {
                 'amt': float(amt), 'dist': float(distance), 'hr': float(hour),
                 'n': float(customer_txn_count)
