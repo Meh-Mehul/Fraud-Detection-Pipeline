@@ -1,9 +1,7 @@
 """
-Real-time fraud detection with NATS messaging
+Real-time fraud detection with NATS messaging - MODULAR VERSION
+Uses external JSON rules configuration for easy updates
 """
-## This is a simpler detector model we have made till now.
-## For now, it checks some (assumed) bank-rules, as well as trains an ML-model (via ground truths from the datasets, with pathway persistence)
-
 import pathway as pw
 import math
 import json
@@ -11,6 +9,7 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 from river import tree, preprocessing, compose
+from fraud_rules_loader import FraudRulesManager  # Import rules manager
 
 
 NATS_URI = "nats://localhost:4222"
@@ -18,9 +17,6 @@ NATS_INPUT_TOPIC = "fraud.transactions"
 NATS_ALERTS_TOPIC = "fraud.alerts"
 NATS_RESULTS_TOPIC = "fraud.results"
 
-# ============================================================================
-# PERSISTENCE CONFIGURATION
-# ============================================================================
 PERSISTENCE_DIR = Path("pathway_persistence")
 PERSISTENCE_DIR.mkdir(exist_ok=True)
 
@@ -29,11 +25,17 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
     snapshot_interval_ms=10000
 )
 
+# ============================================================================
+# INITIALIZE RULES MANAGER
+# ============================================================================
+RULES_MANAGER = FraudRulesManager("fraud_detection_rules.json")
+print(f"✓ Loaded rules from: fraud_detection_rules.json")
+print(f"  - Training threshold: {RULES_MANAGER.get_training_threshold()} transactions")
+
 
 # ============================================================================
-# PATHWAY SCHEMA WITH EXPLICIT TYPES
+# PATHWAY SCHEMA
 # ============================================================================
-## This is same as the synthetic dataset we are testing on, but it may be configured according to bank usage as well
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
@@ -88,15 +90,14 @@ def extract_hour(unix_time: int) -> int:
 
 @pw.udf
 def is_online_category(category: str) -> int:
-    """Check if category is online"""
-    online_cats = ['shopping_net', 'misc_net', 'grocery_net']
-    return 1 if category in online_cats else 0
+    """Check if category is online - NOW USES RULES"""
+    return 1 if RULES_MANAGER.is_online_category(category) else 0
 
 
 @pw.udf
 def is_late_night(hour: int) -> int:
-    """Check if transaction is late night"""
-    return 1 if 1 <= hour <= 5 else 0
+    """Check if transaction is late night - NOW USES RULES"""
+    return 1 if RULES_MANAGER.is_late_night(hour) else 0
 
 
 @pw.udf
@@ -121,7 +122,7 @@ def parse_and_filter_alert(alert_json: str):
 
 
 # ============================================================================
-# ML MODEL MANAGEMENT WITH DEDUPLICATION TRACKING
+# ML MODEL MANAGEMENT
 # ============================================================================
 class MLModelState:
     """ML models with persistence and deduplication support"""
@@ -129,12 +130,9 @@ class MLModelState:
     def __init__(self):
         self.model_path = PERSISTENCE_DIR / "ml_models.pkl"
         self.stats_path = PERSISTENCE_DIR / "stats.json"
-        
-        # CRITICAL: Track processed transactions to prevent duplicates
         self.processed_transactions = set()
         self.processed_path = PERSISTENCE_DIR / "processed_trans.json"
         
-        # Try to load existing models
         if self.model_path.exists():
             print("🔄 Loading saved ML models...")
             try:
@@ -149,7 +147,6 @@ class MLModelState:
         else:
             self._init_new_models()
         
-        # Load stats
         if self.stats_path.exists():
             with open(self.stats_path, 'r') as f:
                 self.stats = json.load(f)
@@ -157,7 +154,6 @@ class MLModelState:
         else:
             self.stats = {'total': 0, 'alerts': 0, 'tier1': 0, 'tier2': 0, 'tier3': 0}
         
-        # Load processed transactions
         if self.processed_path.exists():
             with open(self.processed_path, 'r') as f:
                 self.processed_transactions = set(json.load(f))
@@ -185,11 +181,9 @@ class MLModelState:
         print("✓ New ML models initialized")
     
     def is_already_processed(self, trans_num: str) -> bool:
-        """Check if transaction already processed"""
         return trans_num in self.processed_transactions
     
     def mark_processed(self, trans_num: str):
-        """Mark transaction as processed"""
         self.processed_transactions.add(trans_num)
     
     def save_models(self, force=False):
@@ -197,18 +191,15 @@ class MLModelState:
         now = datetime.now()
         if force or (now - self.last_save_time).total_seconds() >= self.save_interval:
             try:
-                # Save models
                 with open(self.model_path, 'wb') as f:
                     pickle.dump({
                         'model_main': self.model_main,
                         'model_validator': self.model_validator
                     }, f)
                 
-                # Save stats
                 with open(self.stats_path, 'w') as f:
                     json.dump(self.stats, f)
                 
-                # Save processed transactions (keep only last 100k to prevent unbounded growth)
                 processed_list = list(self.processed_transactions)
                 if len(processed_list) > 100000:
                     processed_list = processed_list[-100000:]
@@ -226,6 +217,12 @@ class MLModelState:
 
 
 ml_state = MLModelState()
+
+
+# ============================================================================
+# MODULAR FRAUD DETECTION - USES RULES MANAGER
+# ============================================================================
+
 @pw.udf
 def comprehensive_fraud_detection(
     trans_num: str, cc_num: int, merchant: str, category: str,
@@ -237,19 +234,19 @@ def comprehensive_fraud_detection(
     cat_fraud_rate: float,
     distance: float, hour: int, is_online: int, is_late: int
 ) -> str:
-    """Comprehensive fraud detection with deduplication"""
+    """Comprehensive fraud detection using RULES MANAGER"""
     
     try:
-        # CRITICAL: Check if already processed (prevents duplicates from re-evaluations)
+        # Check if already processed
         if ml_state.is_already_processed(trans_num):
             return json.dumps({'is_alert': False, 'duplicate': True})
         
-        # Mark as processed immediately
         ml_state.mark_processed(trans_num)
         ml_state.stats['total'] += 1
         
-        # Training phase
-        if customer_txn_count < 10:
+        # Training phase - use threshold from rules
+        training_threshold = RULES_MANAGER.get_training_threshold()
+        if customer_txn_count < training_threshold:
             feats = {
                 'amt': float(amt), 'dist': float(distance), 'hr': float(hour),
                 'n': float(customer_txn_count)
@@ -267,7 +264,6 @@ def comprehensive_fraud_detection(
             return json.dumps({'is_alert': False, 'training': True})
         
         # Feature engineering
-        # Some z-Score tests
         z_amt = (amt - customer_avg_amt) / customer_std_amt if customer_std_amt > 0 else 0
         amt_ratio = amt / customer_avg_amt if customer_avg_amt > 0 else 1
         z_dist = (distance - customer_avg_dist) / customer_std_dist if customer_std_dist > 0 else 0
@@ -297,110 +293,38 @@ def comprehensive_fraud_detection(
         ml_score = (ml_score1 + ml_score2) / 2
         ml_agreement = abs(ml_score1 - ml_score2) < 20
         
-
-        ################## Some Bank-set rules ############
-        ## For now, we have set them here, but in our final pipeline, they may be configurable as well.        
-        # Tier-based detection
-        is_suspicious = False
-        tier = 0
-        reasons = []
-        confidence = 0
+        # ===================================================================
+        # USE RULES MANAGER FOR DETECTION (REPLACES HARDCODED RULES!)
+        # ===================================================================
         
-        # TIER 1
-        extreme_signals = []
-        if z_amt > 4.5:
-            extreme_signals.append(f"MASSIVE_AMT(Z={z_amt:.1f})")
-        elif z_amt > 3.8 and amt > 500:
-            extreme_signals.append(f"HUGE_AMT(Z={z_amt:.1f},${amt:.0f})")
+        detection_result = RULES_MANAGER.detect_fraud(
+            z_amt=z_amt,
+            amt=amt,
+            z_dist=z_dist,
+            distance=distance,
+            merch_fraud_rate=merch_fraud_rate,
+            merch_total=merch_total,
+            cat_fraud_rate=cat_fraud_rate,
+            customer_fraud_history=customer_fraud_history,
+            ml_score=ml_score,
+            ml_agreement=ml_agreement,
+            is_online=is_online,
+            is_late=is_late
+        )
         
-        if z_dist > 4:
-            extreme_signals.append(f"EXTREME_DIST(Z={z_dist:.1f})")
-        elif z_dist > 3.2 and distance > 100:
-            extreme_signals.append(f"VERY_FAR({distance:.0f}km)")
+        is_suspicious = detection_result['is_fraud']
+        tier = detection_result['tier']
+        reasons = detection_result['reasons']
+        confidence = detection_result['confidence']
         
-        if merch_fraud_rate > 0.4 and merch_total > 50:
-            extreme_signals.append(f"FRAUD_MERCHANT({merch_fraud_rate*100:.0f}%)")
-        
-        if customer_fraud_history >= 3:
-            extreme_signals.append(f"FRAUD_HISTORY({customer_fraud_history})")
-        
-        if len(extreme_signals) >= 2:
-            is_suspicious = True
-            tier = 1
-            confidence = 95
-            ml_state.stats['tier1'] += 1
-            reasons = extreme_signals[:3]
-        elif len(extreme_signals) >= 1 and ml_score >= 80 and ml_agreement:
-            is_suspicious = True
-            tier = 1
-            confidence = 90
-            ml_state.stats['tier1'] += 1
-            reasons = extreme_signals + [f"ML{ml_score:.0f}"]
-        
-        # TIER 2
-        if not is_suspicious:
-            tier2_score = 0
-            tier2_reasons = []
-            
-            if z_amt > 3.5:
-                tier2_score += 40
-                tier2_reasons.append(f"VeryHighAmt(Z={z_amt:.1f})")
-            elif z_amt > 3:
-                tier2_score += 30
-                tier2_reasons.append(f"HighAmt(Z={z_amt:.1f})")
-            
-            if z_dist > 3.5:
-                tier2_score += 35
-                tier2_reasons.append(f"VeryFar(Z={z_dist:.1f})")
-            elif z_dist > 3:
-                tier2_score += 25
-                tier2_reasons.append(f"Far(Z={z_dist:.1f})")
-            
-            if merch_fraud_rate > 0.3 and merch_total > 40:
-                tier2_score += 35
-                tier2_reasons.append(f"RiskyMerch({merch_fraud_rate*100:.0f}%)")
-            
-            if is_online and is_late and amt > 400:
-                tier2_score += 25
-                tier2_reasons.append(f"LateOnline")
-            
-            if customer_fraud_history >= 2:
-                tier2_score += 30
-                tier2_reasons.append(f"PrevFraud({customer_fraud_history})")
-            
-            if z_amt > 2.5 and z_dist > 2.5:
-                tier2_score += 25
-                tier2_reasons.append("Amt+Dist")
-            
-            if ml_score >= 80 and ml_agreement:
-                tier2_score += 25
-                tier2_reasons.append(f"ML{ml_score:.0f}")
-            elif ml_score >= 70:
-                tier2_score += 15
-            
-            if tier2_score >= 75:
-                is_suspicious = True
-                tier = 2
-                confidence = 80
+        # Update stats based on tier
+        if is_suspicious:
+            if tier == 1:
+                ml_state.stats['tier1'] += 1
+            elif tier == 2:
                 ml_state.stats['tier2'] += 1
-                reasons = tier2_reasons[:4]
-        
-        # TIER 3
-        if not is_suspicious:
-            if ml_score >= 82 and ml_agreement:
-                support_count = sum([
-                    z_amt > 2, z_dist > 2, merch_fraud_rate > 0.15,
-                    cat_fraud_rate > 0.1, customer_fraud_history >= 1
-                ])
-                
-                if support_count >= 2:
-                    is_suspicious = True
-                    tier = 3
-                    confidence = 75
-                    ml_state.stats['tier3'] += 1
-                    reasons.append(f"ML{ml_score:.0f}")
-                    if z_amt > 2.5: reasons.append(f"HighAmt")
-                    if z_dist > 2.5: reasons.append(f"FarLoc")
+            elif tier == 3:
+                ml_state.stats['tier3'] += 1
         
         reason_str = "|".join(reasons[:4]) if reasons else f"T{tier}"
         
@@ -447,28 +371,24 @@ def comprehensive_fraud_detection(
 
 
 # ============================================================================
-# MAIN DETECTOR PIPELINE
+# MAIN DETECTOR PIPELINE (UNCHANGED)
 # ============================================================================
 
 def run_detector():
     """Pathway-native fraud detection with NATS messaging"""
     
     print("═══════════════════════════════════════════════════════════")
-    print("  PATHWAY-NATIVE FRAUD DETECTOR v9.1 - NATS FIXED")
+    print("  PATHWAY-NATIVE FRAUD DETECTOR v10.0 - MODULAR RULES")
     print("═══════════════════════════════════════════════════════════")
     print()
     print("  ✓ State persistence enabled")
     print("  ✓ Deduplication active")
     print("  ✓ ML model checkpointing")
-    print("  ✓ Crash recovery support")
-    print()
-    print(f"  NATS URI: {NATS_URI}")
-    print(f"  Input: {NATS_INPUT_TOPIC}")
-    print(f"  Alerts: {NATS_ALERTS_TOPIC}")
-    print(f"  Results: {NATS_RESULTS_TOPIC}")
+    print("  ✓ External rules configuration")
+    print("  ✓ Hot-reloadable rules")
     print()
     
-    # Read transactions from NATS with persistence - FIXED parameters
+    # Read transactions from NATS
     transactions = pw.io.nats.read(
         uri=NATS_URI,
         topic=NATS_INPUT_TOPIC,
@@ -477,9 +397,7 @@ def run_detector():
         persistent_id="transactions_input"
     )
     
-    print("✓ Connected to NATS transaction stream (persistent)")
-    print(f"✓ Checkpoint dir: {PERSISTENCE_DIR / 'checkpoints'}")
-    print(f"✓ Processed tracking: {len(ml_state.processed_transactions):,} IDs")
+    print("✓ Connected to NATS transaction stream")
     print()
     
     # Add computed fields
@@ -584,12 +502,8 @@ def run_detector():
         )
     )
     
-    # Output all results to NATS - FIXED parameters
-    pw.io.nats.write(
-        results,
-        uri=NATS_URI,
-        topic=NATS_RESULTS_TOPIC
-    )
+    # Output all results to NATS
+    pw.io.nats.write(results, uri=NATS_URI, topic=NATS_RESULTS_TOPIC)
     
     # Filter and publish alerts
     alerts_filtered = results.select(
@@ -598,21 +512,17 @@ def run_detector():
     
     alerts = alerts_filtered.filter(pw.this.alert_json.is_not_none())
     
-    pw.io.nats.write(
-        alerts,
-        uri=NATS_URI,
-        topic=NATS_ALERTS_TOPIC
-    )
+    pw.io.nats.write(alerts, uri=NATS_URI, topic=NATS_ALERTS_TOPIC)
     
-    print("🎯 Pathway pipeline active with NATS messaging...")
-    print(f"   Alerts: nats://{NATS_URI}/{NATS_ALERTS_TOPIC}")
-    print(f"   Debug: nats://{NATS_URI}/{NATS_RESULTS_TOPIC}")
+    print("🎯 Pathway pipeline active with modular rules...")
     print("   Press Ctrl+C to stop")
     print()
     
-    # Run with persistence config
     pw.run(
         persistence_config=CHECKPOINT_CONFIG,
         monitoring_level=pw.MonitoringLevel.NONE
     )
 
+
+if __name__ == "__main__":
+    run_detector()
