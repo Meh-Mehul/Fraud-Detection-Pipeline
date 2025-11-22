@@ -5,7 +5,7 @@ NATS_URI = "nats://localhost:4222"
 ORIGINAL_FILE = "fraudTrain.csv"
 TEMP_STREAM_FILE = "fraud_stream.csv"
 
-class TransactionSchema(pw.Schema):
+class FeedBackSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
     cc_num: int = pw.column_definition(dtype=int)

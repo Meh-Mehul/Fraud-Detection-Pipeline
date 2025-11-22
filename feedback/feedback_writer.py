@@ -1,29 +1,35 @@
 # pipeline/feedback/feedback_writer.py
 """
 Feedback writer: reads fraud.feedback stream (with ground truth),
-updates aggregated stats (shared/stat_store) and trains the shared model.
+updates aggregated stats AND trains the shared model.
 Saves model periodically to shared/model_store.
 """
+from pathlib import Path
+import sys
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
+
 import pathway as pw
 import json, pickle, time
-from pathlib import Path
 from datetime import datetime
 from river import tree, preprocessing, compose
 
-from shared.schema import TransactionSchema
-from shared.model_store import model_store
+from shared.schema import FeedBackSchema
+from shared import model_store
 from shared import stats_store
 
 NATS_URI = "nats://localhost:4222"
 FEEDBACK_TOPIC = "fraud.feedback"
 
-PERSIST_DIR = Path("pipeline/pathway_persistence")
+PERSIST_DIR = Path("./pathway_persistence")
 CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
     pw.persistence.Backend.filesystem(str(PERSIST_DIR / "checkpoints_feedback")),
     snapshot_interval_ms=10000
 )
 
-# local in-memory models (loaded from model_store if present; feedback writer is sole saver)
+# ───────────────────────────────────────────────
+# TRAINER WITH STATS TRACKING
+# ───────────────────────────────────────────────
 class Trainer:
     def __init__(self):
         loaded = model_store.load()
@@ -35,9 +41,14 @@ class Trainer:
                 preprocessing.StandardScaler(),
                 tree.HoeffdingAdaptiveTreeClassifier(grace_period=200, delta=1e-5, seed=42)
             )
-            self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(grace_period=150, delta=1e-4, seed=123)
+            self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(
+                grace_period=150, delta=1e-4, seed=123
+            )
             print("✓ New trainer models initialized.")
+        
         self.updates = 0
+        self.fraud_count = 0
+        self.total_count = 0
         self.save_every = 50
 
     def learn(self, feats: dict, label: int):
@@ -45,29 +56,49 @@ class Trainer:
             self.model_main.learn_one(feats, int(label))
             self.model_validator.learn_one(feats, int(label))
             self.updates += 1
+            self.total_count += 1
+            
+            if int(label) == 1:
+                self.fraud_count += 1
+            
+            # Log progress periodically
+            if self.updates % 100 == 0:
+                fraud_rate = (self.fraud_count / self.total_count * 100) if self.total_count > 0 else 0
+                print(f"📚 Trained on {self.total_count} samples | Fraud: {self.fraud_count} ({fraud_rate:.1f}%)")
+            
             if self.updates % self.save_every == 0:
                 self.save()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"❌ Training error: {e}")
 
     def save(self):
-        model_store.save(self.model_main, self.model_validator)
-        print(f"💾 [FEEDBACK] models saved @ {datetime.utcnow().isoformat()}")
+        success = model_store.save(self.model_main, self.model_validator)
+        if success:
+            print(f"💾 [FEEDBACK] Models saved @ {datetime.utcnow().isoformat()} ({self.updates} updates)")
+        else:
+            print(f"❌ [FEEDBACK] Model save FAILED")
+
 
 trainer = Trainer()
 
-# small helpers
+
+# ───────────────────────────────────────────────
+# HELPERS
+# ───────────────────────────────────────────────
 import math
+
 @pw.udf
 def haversine(lat1, lon1, lat2, lon2):
     try:
         d_lat = math.radians(lat2 - lat1)
         d_lon = math.radians(lon2 - lon1)
         a = (math.sin(d_lat/2)**2 +
-             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(d_lon/2)**2)
+             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
+             math.sin(d_lon/2)**2)
         return 6371 * 2 * math.asin(math.sqrt(a))
     except:
         return 0.0
+
 
 @pw.udf
 def extract_hour(unix_time: int) -> int:
@@ -76,30 +107,40 @@ def extract_hour(unix_time: int) -> int:
     except:
         return 0
 
-# UDF that performs training using stats_store for aggregated features
+
+# ───────────────────────────────────────────────
+# TRAINING UDF WITH STATS UPDATE
+# ───────────────────────────────────────────────
 @pw.udf
-def feedback_train(trans_num, cc_num, amt, lat, long, merch_lat, merch_long, unix_time, category, merchant, is_fraud):
-    # compute distance & hour in python-level (udf receives args)
+def feedback_train_and_update(trans_num, cc_num, amt, lat, long, merch_lat, merch_long, 
+                               unix_time, category, merchant, is_fraud):
+    """
+    Train model AND update stats with ground truth labels.
+    This is critical - we need fraud_history to be updated!
+    """
+    
+    # Compute distance & hour
     try:
         hour = datetime.fromtimestamp(int(unix_time)).hour
     except:
         hour = 0
+    
     try:
-        import math
         d_lat = math.radians(float(merch_lat) - float(lat))
         d_lon = math.radians(float(merch_long) - float(long))
         a = (math.sin(d_lat/2)**2 +
-            math.cos(math.radians(float(lat))) * math.cos(math.radians(float(merch_lat))) * math.sin(d_lon/2)**2)
+            math.cos(math.radians(float(lat))) * math.cos(math.radians(float(merch_lat))) * 
+            math.sin(d_lon/2)**2)
         distance = 6371 * 2 * math.asin(math.sqrt(a))
     except:
         distance = 0.0
 
-    # Pull existing aggregates (customer/merchant/category)
+    # Pull existing aggregates BEFORE updating
     cust = stats_store.get_customer_profile(cc_num)
     merch = stats_store.get_merchant_profile(merchant)
     cat = stats_store.get_category_profile(category)
 
-    # build feature dict similar to original detector
+    # Build features
     feats = {
         "amt": float(amt),
         "z_amt": float((float(amt) - cust["avg_amt"]) / cust["std_amt"]) if cust["std_amt"] > 0 else 0.0,
@@ -115,34 +156,41 @@ def feedback_train(trans_num, cc_num, amt, lat, long, merch_lat, merch_long, uni
         "n": float(min(cust["txn_count"], 1000))
     }
 
-    # Train
+    # Train model with this sample
     try:
         trainer.learn(feats, int(is_fraud))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"❌ Training error on {trans_num}: {e}")
 
-    # Update stats AFTER learning (so future transactions see this one)
+    # NOW UPDATE STATS with ground truth
+    # This is CRITICAL - without this, fraud_history never increases!
     try:
-        stats_store.update_customer(cc_num, float(amt), float(distance), int(is_fraud))
-        stats_store.update_merchant(merchant, float(amt), int(is_fraud))
-        stats_store.update_category(category, int(is_fraud))
-    except Exception:
-        pass
+        stats_store.update_customer(str(cc_num), float(amt), float(distance), int(is_fraud))
+        stats_store.update_merchant(str(merchant), float(amt), int(is_fraud))
+        stats_store.update_category(str(category), int(is_fraud))
+    except Exception as e:
+        print(f"❌ Stats update error on {trans_num}: {e}")
 
     return None
 
+
+# ───────────────────────────────────────────────
+# MAIN
+# ───────────────────────────────────────────────
 def run_feedback_writer():
     print("══════════════════════════════════════════")
-    print("      FEEDBACK TRAINER (sole writer)      ")
+    print("   FEEDBACK TRAINER (Model + Stats)       ")
     print("══════════════════════════════════════════")
     print(f"Listening on: {FEEDBACK_TOPIC}")
-    print("Persistence: pipeline/pathway_persistence")
+    print(f"Model file: {PERSIST_DIR / 'ml_models.pkl'}")
+    print(f"Stats file: {PERSIST_DIR / 'stats_store.json'}")
+    print("Persistence: pathway_persistence/")
     print()
 
     feedback = pw.io.nats.read(
         uri=NATS_URI,
         topic=FEEDBACK_TOPIC,
-        schema=TransactionSchema,
+        schema=FeedBackSchema,
         format="json",
         persistent_id="feedback_writer"
     )
@@ -154,7 +202,7 @@ def run_feedback_writer():
     )
 
     trained = enriched.select(
-        _do_train=feedback_train(
+        _result=feedback_train_and_update(
             pw.this.trans_num, pw.this.cc_num,
             pw.this.amt, pw.this.lat, pw.this.long,
             pw.this.merch_lat, pw.this.merch_long,
@@ -162,6 +210,13 @@ def run_feedback_writer():
             pw.this.is_fraud
         )
     )
-
-    # We don't publish anything; this pipeline exists to train & persist model/stats
+    
+    # Must write to a sink to force execution
+    pw.io.null.write(trained)
+    
+    print("✓ Feedback writer running...")
     pw.run(persistence_config=CHECKPOINT_CONFIG)
+
+
+if __name__ == "__main__":
+    run_feedback_writer()

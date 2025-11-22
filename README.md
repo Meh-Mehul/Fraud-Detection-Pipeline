@@ -18,9 +18,12 @@ For now, we are learning through the live-transaction's target variable and trai
 2. Install the dataset as name it as ```fraudTrain.csv``` and store in the root directory of this project.
 3. Run ```nats-server``` in a terminal.
 4. Run the python files in the following order (all in different terminals):
+-      python3 pretrain.py (wait till it ends and then run the others)
 -      python3 run_detector.py
 -      python3 run_report.py
--      python3 run_publisher.py
+-      python3 run_stats_updater.py
+-      python3 publisher/pub_feed.py
+-      python3 publisher/pub_det.py
 
 
 
