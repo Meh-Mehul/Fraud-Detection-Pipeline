@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    volumes:
+      - ./pathway_persistence:/app/pathway_persistence
+      - ./fraud_reports:/app/fraud_reports
+      - ./fraudTrain.csv:/app/fraudTrain.csv:ro
+      - ./fraudTest.csv:/app/fraudTest.csv:ro
+    networks:
+      - fraud-network
+
+networks:
+  fraud-network:
+    driver: bridge
