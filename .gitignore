@@ -63,6 +63,9 @@ recovery_storage.db
 pathway_storage/
 persistent_data/
 fraud_reports/
+pathway_persistence/
+pathway_streams/
+pipeline/
 
 # ---- Node / Frontend (if used) ----
 node_modules/
