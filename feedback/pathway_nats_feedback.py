@@ -10,48 +10,33 @@ from datetime import datetime
 from pathlib import Path
 from river import tree, preprocessing, compose
 
-NATS_URI = "nats://localhost:4222"
-FEEDBACK_TOPIC = "fraud.feedback"
-
-PERSIST = Path("pathway_persistence")
-PERSIST.mkdir(exist_ok=True)
-
-MODEL_PATH = PERSIST / "ml_models.pkl"
-STATS_PATH = PERSIST / "stats.json"
-PROCESSED_PATH = PERSIST / "processed_trans.json"
-CHECKPOINT_DIR = PERSIST / "checkpoints"
-class TransactionSchema(pw.Schema):
-    trans_num: str = pw.column_definition(dtype=str)
-    trans_date_trans_time: str = pw.column_definition(dtype=str)
-    cc_num: int = pw.column_definition(dtype=int)
-    merchant: str = pw.column_definition(dtype=str)
-    category: str = pw.column_definition(dtype=str)
-    amt: float = pw.column_definition(dtype=float)
-    first: str = pw.column_definition(dtype=str)
-    last: str = pw.column_definition(dtype=str)
-    gender: str = pw.column_definition(dtype=str)
-    street: str = pw.column_definition(dtype=str)
-    city: str = pw.column_definition(dtype=str)
-    state: str = pw.column_definition(dtype=str)
-    zip: int = pw.column_definition(dtype=int)
-    lat: float = pw.column_definition(dtype=float)
-    long: float = pw.column_definition(dtype=float)
-    city_pop: int = pw.column_definition(dtype=int)
-    job: str = pw.column_definition(dtype=str)
-    dob: str = pw.column_definition(dtype=str)
-    unix_time: int = pw.column_definition(dtype=int)
-    merch_lat: float = pw.column_definition(dtype=float)
-    merch_long: float = pw.column_definition(dtype=float)
-    is_fraud: int = pw.column_definition(dtype=int)
-
+from shared.schema import TransactionSchema
+from shared.config import (
+    NATS_URI,
+    FEEDBACK_TOPIC,
+    PERSISTENCE_DIR,
+    CHECKPOINT_CONFIG,
+    ML_MODEL_GRACE_PERIOD_MAIN,
+    ML_MODEL_DELTA_MAIN,
+    ML_MODEL_SEED_MAIN,
+    ML_MODEL_GRACE_PERIOD_VALIDATOR,
+    ML_MODEL_DELTA_VALIDATOR,
+    ML_MODEL_SEED_VALIDATOR,
+    MAX_TXN_COUNT,
+    MODEL_SAVE_INTERVAL
+)
 
 # ---------------------------------------------------------------------
 
 class SharedModel:
     def __init__(self):
-        if MODEL_PATH.exists():
+        self.model_path = PERSISTENCE_DIR / "ml_models.pkl"
+        self.stats_path = PERSISTENCE_DIR / "stats.json"
+        self.processed_path = PERSISTENCE_DIR / "processed_trans.json"
+        
+        if self.model_path.exists():
             print("🔄 Loading existing shared ML models...")
-            with open(MODEL_PATH, "rb") as f:
+            with open(self.model_path, "rb") as f:
                 saved = pickle.load(f)
                 self.model_main = saved["model_main"]
                 self.model_validator = saved["model_validator"]
@@ -61,34 +46,34 @@ class SharedModel:
             self.model_main = compose.Pipeline(
                 preprocessing.StandardScaler(),
                 tree.HoeffdingAdaptiveTreeClassifier(
-                    grace_period=200, delta=1e-5, seed=42
+                    grace_period=ML_MODEL_GRACE_PERIOD_MAIN, delta=ML_MODEL_DELTA_MAIN, seed=ML_MODEL_SEED_MAIN
                 )
             )
             self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(
-                grace_period=150, delta=1e-4, seed=123
+                grace_period=ML_MODEL_GRACE_PERIOD_VALIDATOR, delta=ML_MODEL_DELTA_VALIDATOR, seed=ML_MODEL_SEED_VALIDATOR
             )
 
         # Load stats & processed IDs
         self.stats = {"learned": 0}
-        if STATS_PATH.exists():
-            self.stats = json.load(open(STATS_PATH))
+        if self.stats_path.exists():
+            self.stats = json.load(open(self.stats_path))
 
         self.processed = set()
-        if PROCESSED_PATH.exists():
-            self.processed = set(json.load(open(PROCESSED_PATH)))
+        if self.processed_path.exists():
+            self.processed = set(json.load(open(self.processed_path)))
 
         self.last_save = datetime.now()
 
     def save(self):
         """WRITE the shared model + stats"""
-        with open(MODEL_PATH, "wb") as f:
+        with open(self.model_path, "wb") as f:
             pickle.dump({
                 "model_main": self.model_main,
                 "model_validator": self.model_validator
             }, f)
 
-        json.dump(self.stats, open(STATS_PATH, "w"))
-        json.dump(list(self.processed), open(PROCESSED_PATH, "w"))
+        json.dump(self.stats, open(self.stats_path, "w"))
+        json.dump(list(self.processed), open(self.processed_path, "w"))
 
 shared = SharedModel()
 
@@ -107,7 +92,7 @@ def learn_model(trans_num, amt, dist, hour, is_fraud, customer_txn_count):
         "amt": float(amt),
         "dist": float(dist),
         "hr": float(hour),
-        "n": float(min(customer_txn_count, 1000))
+        "n": float(min(customer_txn_count, MAX_TXN_COUNT))
     }
 
     try:
@@ -117,7 +102,7 @@ def learn_model(trans_num, amt, dist, hour, is_fraud, customer_txn_count):
         pass
 
     # Save every N updates
-    if shared.stats["learned"] % 50 == 0:
+    if shared.stats["learned"] % MODEL_SAVE_INTERVAL == 0:
         print(f"💾 Saved after {shared.stats['learned']} updates")
         shared.save()
 
@@ -149,7 +134,7 @@ def run_feedback():
     print("      FEEDBACK TRAINER (sole writer)      ")
     print("══════════════════════════════════════════")
     print(f"Listening on: {FEEDBACK_TOPIC}")
-    print(f"Persistence : {PERSIST}")
+    print(f"Persistence : {PERSISTENCE_DIR}")
     print()
 
     feedback = pw.io.nats.read(
@@ -179,8 +164,5 @@ def run_feedback():
     )
 
     pw.run(
-        persistence_config=pw.persistence.Config.simple_config(
-            pw.persistence.Backend.filesystem(str(CHECKPOINT_DIR)),
-            snapshot_interval_ms=10000
-        )
+        persistence_config=CHECKPOINT_CONFIG
     )

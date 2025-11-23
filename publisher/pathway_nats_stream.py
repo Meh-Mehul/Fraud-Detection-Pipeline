@@ -1,46 +1,15 @@
 import pathway as pw
 import time
 import threading
+from shared.config import NATS_URI, NATS_INPUT_TOPIC as NATS_TOPIC, TARGET_TPS, ORIGINAL_DATA_FILE, AUTOCOMMIT_DURATION_MS, PUBLISHER_STREAM_FILE
+from shared.schema import TransactionSchema
 
 # ───────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ───────────────────────────────────────────────────────────────
 
-NATS_URI = "nats://localhost:4222"
-NATS_TOPIC = "fraud.transactions"
-
-ORIGINAL_FILE = "fraudTrain.csv"
-TEMP_STREAM_FILE = "fraud_stream.csv"
-
-# SET YOUR SPEED HERE (Keep < 100 for pure file streaming)
-TARGET_TPS = 50 
-
-# ───────────────────────────────────────────────────────────────
-# SCHEMA
-# ───────────────────────────────────────────────────────────────
-class TransactionSchema(pw.Schema):
-    trans_num: str = pw.column_definition(dtype=str)
-    trans_date_trans_time: str = pw.column_definition(dtype=str)
-    cc_num: int = pw.column_definition(dtype=int)
-    merchant: str = pw.column_definition(dtype=str)
-    category: str = pw.column_definition(dtype=str)
-    amt: float = pw.column_definition(dtype=float)
-    first: str = pw.column_definition(dtype=str)
-    last: str = pw.column_definition(dtype=str)
-    gender: str = pw.column_definition(dtype=str)
-    street: str = pw.column_definition(dtype=str)
-    city: str = pw.column_definition(dtype=str)
-    state: str = pw.column_definition(dtype=str)
-    zip: int = pw.column_definition(dtype=int)
-    lat: float = pw.column_definition(dtype=float)
-    long: float = pw.column_definition(dtype=float)
-    city_pop: int = pw.column_definition(dtype=int)
-    job: str = pw.column_definition(dtype=str)
-    dob: str = pw.column_definition(dtype=str)
-    unix_time: int = pw.column_definition(dtype=int)
-    merch_lat: float = pw.column_definition(dtype=float)
-    merch_long: float = pw.column_definition(dtype=float)
-    is_fraud: int = pw.column_definition(dtype=int)
+ORIGINAL_FILE = ORIGINAL_DATA_FILE
+TEMP_STREAM_FILE = PUBLISHER_STREAM_FILE 
 
 # ───────────────────────────────────────────────────────────────
 # 1. PURE STREAMING WRITER (Row-by-Row)
@@ -113,7 +82,7 @@ def run_publisher():
         TEMP_STREAM_FILE,
         schema=TransactionSchema,
         mode='streaming',
-        autocommit_duration_ms=100 # Low latency commit
+        autocommit_duration_ms=AUTOCOMMIT_DURATION_MS # Low latency commit
         
     )
 

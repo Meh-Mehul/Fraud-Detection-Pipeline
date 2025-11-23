@@ -3,9 +3,9 @@ from pathlib import Path
 import pickle
 import threading
 from datetime import datetime
+from shared.config import PERSISTENCE_DIR
 
-PERSIST_DIR = Path("pathway_persistence")
-PERSIST_DIR.mkdir(parents=True, exist_ok=True)
+PERSIST_DIR = PERSISTENCE_DIR
 
 MODEL_PATH = PERSIST_DIR / "ml_models.pkl"
 PROCESSED_PATH = PERSIST_DIR / "processed_trans.json"

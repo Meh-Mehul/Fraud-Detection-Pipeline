@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 import threading
 import math
+from shared.config import PERSISTENCE_DIR
 
-PERSIST_DIR = Path("pathway_persistence")
-PERSIST_DIR.mkdir(parents=True, exist_ok=True)
+PERSIST_DIR = PERSISTENCE_DIR
 
 _STATS_FILE = PERSIST_DIR / "stats_store.json"
 _lock = threading.Lock()

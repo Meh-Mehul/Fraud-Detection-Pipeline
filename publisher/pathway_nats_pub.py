@@ -4,35 +4,8 @@
 
 import pathway as pw
 from datetime import datetime
-
-# NATS Configuration
-NATS_URI = "nats://localhost:4222"
-NATS_TOPIC = "fraud.transactions"
-
-## For now, the structure of this table is accroding to our dataset used, but this may be configured according to the usecase and data-availability of the bank.
-class TransactionSchema(pw.Schema):
-    trans_num: str = pw.column_definition(dtype=str)
-    trans_date_trans_time: str = pw.column_definition(dtype=str)
-    cc_num: int = pw.column_definition(dtype=int)
-    merchant: str = pw.column_definition(dtype=str)
-    category: str = pw.column_definition(dtype=str)
-    amt: float = pw.column_definition(dtype=float)
-    first: str = pw.column_definition(dtype=str)
-    last: str = pw.column_definition(dtype=str)
-    gender: str = pw.column_definition(dtype=str)
-    street: str = pw.column_definition(dtype=str)
-    city: str = pw.column_definition(dtype=str)
-    state: str = pw.column_definition(dtype=str)
-    zip: int = pw.column_definition(dtype=int)
-    lat: float = pw.column_definition(dtype=float)
-    long: float = pw.column_definition(dtype=float)
-    city_pop: int = pw.column_definition(dtype=int)
-    job: str = pw.column_definition(dtype=str)
-    dob: str = pw.column_definition(dtype=str)
-    unix_time: int = pw.column_definition(dtype=int)
-    merch_lat: float = pw.column_definition(dtype=float)
-    merch_long: float = pw.column_definition(dtype=float)
-    is_fraud: int = pw.column_definition(dtype=int)
+from shared.config import NATS_URI, NATS_INPUT_TOPIC as NATS_TOPIC, AUTOCOMMIT_DURATION_MS, PUBLISHER_STREAM_FILE
+from shared.schema import TransactionSchema
 
 
 def run_publisher():
@@ -46,10 +19,10 @@ def run_publisher():
     print()
     
     transactions = pw.io.csv.read(
-        'fraud_stream.csv',
+        PUBLISHER_STREAM_FILE,
         schema=TransactionSchema,
         mode='streaming',
-        autocommit_duration_ms=100
+        autocommit_duration_ms=AUTOCOMMIT_DURATION_MS
     )
     
     print("✓ CSV streaming initialized")

@@ -11,12 +11,10 @@ from pathlib import Path
 # Add project root to python path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
-ORIGINAL_FILE = "fraudTrain.csv"
-TEMP_STREAM_FILE = "./publisher/temp_det_stream.csv"
-NATS_URI = "nats://localhost:4222"
-NATS_TOPIC = "fraud.transactions"
+from shared.config import NATS_URI, NATS_INPUT_TOPIC as NATS_TOPIC, TARGET_TPS, ORIGINAL_DATA_FILE, AUTOCOMMIT_DURATION_MS, PUBLISHER_DETECTOR_TEMP_FILE
 
-TARGET_TPS = 20
+ORIGINAL_FILE = ORIGINAL_DATA_FILE
+TEMP_STREAM_FILE = PUBLISHER_DETECTOR_TEMP_FILE
 
 def stream_second_half(tps):
     with open(ORIGINAL_FILE, "r") as f:
@@ -55,7 +53,7 @@ def run_pub():
         TEMP_STREAM_FILE,
         schema=TransactionSchema,
         mode="streaming",
-        autocommit_duration_ms=100
+        autocommit_duration_ms=AUTOCOMMIT_DURATION_MS
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=NATS_TOPIC)
     pw.run()

@@ -12,13 +12,7 @@ import os
 import json
 from datetime import datetime
 from pathlib import Path
-
-# NATS Configuration
-NATS_URI = "nats://localhost:4222"
-NATS_ALERTS_TOPIC = "fraud.alerts"
-NATS_REPORTS_TOPIC = "fraud.reports"
-
-PDF_AVAILABLE = False
+from shared.config import NATS_URI, NATS_ALERTS_TOPIC, NATS_REPORTS_TOPIC, REPORTS_DIR
 try:
     ## We found the ReportLab  library to be very useful in PDF-report making, we have used Pathway Store to store he context and used it 
     ## as well as model decision info for making the report, using report lab makes it very easy for us to generate pdfs on-the-go.
@@ -139,7 +133,7 @@ class ReportGenerator:
     """Generate PDF reports from alerts"""
     
     def __init__(self):
-        self.reports_dir = Path("fraud_reports")
+        self.reports_dir = Path(REPORTS_DIR)
         self.reports_dir.mkdir(exist_ok=True)
         self.seen_patterns = set()
         self.report_count = 0

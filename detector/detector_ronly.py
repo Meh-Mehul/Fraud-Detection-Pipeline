@@ -12,16 +12,22 @@ from pathlib import Path
 from shared.schema import TransactionSchema
 from shared.model_store import model_store
 from shared import stats_store
-
-NATS_URI = "nats://localhost:4222"
-INPUT_TOPIC = "fraud.transactions"
-RESULTS_TOPIC = "fraud.results"
-ALERTS_TOPIC = "fraud.alerts"
-
-PERSIST_DIR = Path("pipeline/pathway_persistence")
-CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
-    pw.persistence.Backend.filesystem(str(PERSIST_DIR / "checkpoints_detector")),
-    snapshot_interval_ms=10000
+from shared.config import (
+    NATS_URI,
+    NATS_INPUT_TOPIC as INPUT_TOPIC,
+    NATS_RESULTS_TOPIC as RESULTS_TOPIC,
+    NATS_ALERTS_TOPIC as ALERTS_TOPIC,
+    DETECTOR_PERSIST_DIR as PERSIST_DIR,
+    DETECTOR_CHECKPOINT_CONFIG as CHECKPOINT_CONFIG,
+    FRAUD_HISTORY_THRESHOLD,
+    Z_AMT_THRESHOLD,
+    AMT_MIN_FOR_HUGE,
+    ML_SCORE_HIGH,
+    ML_SCORE_MEDIUM,
+    ML_SCORE_LOW,
+    CONFIDENCE_HIGH,
+    CONFIDENCE_MEDIUM,
+    CONFIDENCE_LOW
 )
 
 # Reader that reloads model periodically
@@ -132,23 +138,23 @@ def run_infer(trans_num, cc_num, amt, lat, long, merch_lat, merch_long, unix_tim
     confidence = 0
 
     # recreate a couple of bank rules that force alerts (mirrors original)
-    if cust["fraud_history"] >= 3:
+    if cust["fraud_history"] >= FRAUD_HISTORY_THRESHOLD:
         reasons.append(f"FRAUD_HISTORY({cust['fraud_history']})")
-    if (cust["std_amt"] > 0) and ((float(amt) - cust["avg_amt"]) / (cust["std_amt"]) > 3.5) and float(amt) > 500:
+    if (cust["std_amt"] > 0) and ((float(amt) - cust["avg_amt"]) / (cust["std_amt"]) > Z_AMT_THRESHOLD) and float(amt) > AMT_MIN_FOR_HUGE:
         reasons.append("HUGE_AMT")
 
-    if len(reasons) >= 2 or (len(reasons) >= 1 and ml_score >= 80):
+    if len(reasons) >= 2 or (len(reasons) >= 1 and ml_score >= ML_SCORE_HIGH):
         is_alert = True
         tier = 1
-        confidence = 90
-    elif ml_score >= 82:
+        confidence = CONFIDENCE_HIGH
+    elif ml_score >= ML_SCORE_MEDIUM:
         is_alert = True
         tier = 3
-        confidence = 75
-    elif ml_score >= 75:
+        confidence = CONFIDENCE_MEDIUM
+    elif ml_score >= ML_SCORE_LOW:
         is_alert = True
         tier = 2
-        confidence = 70
+        confidence = CONFIDENCE_LOW
 
     out = {
         "is_alert": is_alert,

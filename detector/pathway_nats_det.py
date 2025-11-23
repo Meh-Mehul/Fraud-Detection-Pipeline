@@ -12,21 +12,62 @@ from datetime import datetime
 from pathlib import Path
 from river import tree, preprocessing, compose
 
-
-NATS_URI = "nats://localhost:4222"
-NATS_INPUT_TOPIC = "fraud.transactions"
-NATS_ALERTS_TOPIC = "fraud.alerts"
-NATS_RESULTS_TOPIC = "fraud.results"
-
-# ============================================================================
-# PERSISTENCE CONFIGURATION
-# ============================================================================
-PERSISTENCE_DIR = Path("pathway_persistence")
-PERSISTENCE_DIR.mkdir(exist_ok=True)
-
-CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
-    pw.persistence.Backend.filesystem(str(PERSISTENCE_DIR / "checkpoints")),
-    snapshot_interval_ms=10000
+from shared.config import (
+    NATS_URI,
+    NATS_INPUT_TOPIC,
+    NATS_ALERTS_TOPIC,
+    NATS_RESULTS_TOPIC,
+    PERSISTENCE_DIR,
+    CHECKPOINT_CONFIG,
+    ML_MODEL_GRACE_PERIOD_MAIN,
+    ML_MODEL_DELTA_MAIN,
+    ML_MODEL_SEED_MAIN,
+    ML_MODEL_GRACE_PERIOD_VALIDATOR,
+    ML_MODEL_DELTA_VALIDATOR,
+    ML_MODEL_SEED_VALIDATOR,
+    ONLINE_CATEGORIES,
+    LATE_NIGHT_START,
+    LATE_NIGHT_END,
+    MODEL_SAVE_INTERVAL,
+    PROCESSED_MAX_SIZE,
+    MIN_TRAINING_TRANSACTIONS,
+    PROGRESS_LOG_INTERVAL,
+    MAX_TXN_COUNT,
+    ML_AGREEMENT_THRESHOLD,
+    ALERT_LOG_INTERVAL,
+    MIN_MERCH_TOTAL_FOR_RATE,
+    MIN_CAT_TOTAL_FOR_RATE,
+    EXTREME_Z_AMT,
+    HUGE_Z_AMT,
+    AMT_MIN_FOR_HUGE,
+    EXTREME_Z_DIST,
+    VERY_FAR_Z_DIST,
+    VERY_FAR_DIST,
+    HIGH_MERCH_FRAUD_RATE,
+    MIN_MERCH_TOTAL,
+    FRAUD_HISTORY_EXTREME,
+    CONFIDENCE_TIER1_EXTREME,
+    CONFIDENCE_TIER1_HIGH,
+    CONFIDENCE_TIER2,
+    CONFIDENCE_TIER3,
+    TIER2_Z_AMT_HIGH,
+    TIER2_Z_AMT_MEDIUM,
+    TIER2_Z_DIST_HIGH,
+    TIER2_Z_DIST_MEDIUM,
+    TIER2_MERCH_FRAUD_RATE,
+    TIER2_MIN_MERCH_TOTAL,
+    TIER2_LATE_ONLINE_AMT,
+    TIER2_FRAUD_HISTORY,
+    TIER2_Z_COMBO,
+    TIER2_ML_SCORE_HIGH,
+    TIER2_ML_SCORE_MEDIUM,
+    TIER2_THRESHOLD,
+    TIER3_ML_SCORE,
+    TIER3_SUPPORT_COUNT,
+    TIER3_Z_THRESHOLD,
+    TIER3_MERCH_FRAUD_THRESHOLD,
+    TIER3_CAT_FRAUD_THRESHOLD,
+    TIER3_FRAUD_HISTORY_MIN
 )
 
 
@@ -89,14 +130,13 @@ def extract_hour(unix_time: int) -> int:
 @pw.udf
 def is_online_category(category: str) -> int:
     """Check if category is online"""
-    online_cats = ['shopping_net', 'misc_net', 'grocery_net']
-    return 1 if category in online_cats else 0
+    return 1 if category in ONLINE_CATEGORIES else 0
 
 
 @pw.udf
 def is_late_night(hour: int) -> int:
     """Check if transaction is late night"""
-    return 1 if 1 <= hour <= 5 else 0
+    return 1 if LATE_NIGHT_START <= hour <= LATE_NIGHT_END else 0
 
 
 @pw.udf
@@ -164,23 +204,23 @@ class MLModelState:
             print(f"✓ Loaded {len(self.processed_transactions):,} processed transaction IDs")
         
         self.last_save_time = datetime.now()
-        self.save_interval = 60
+        self.save_interval = MODEL_SAVE_INTERVAL
     
     def _init_new_models(self):
         """Initialize new ML models"""
         self.model_main = compose.Pipeline(
             preprocessing.StandardScaler(),
             tree.HoeffdingAdaptiveTreeClassifier(
-                grace_period=200,
-                delta=0.00001,
-                seed=42
+                grace_period=ML_MODEL_GRACE_PERIOD_MAIN,
+                delta=ML_MODEL_DELTA_MAIN,
+                seed=ML_MODEL_SEED_MAIN
             )
         )
         
         self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(
-            grace_period=150,
-            delta=0.0001,
-            seed=123
+            grace_period=ML_MODEL_GRACE_PERIOD_VALIDATOR,
+            delta=ML_MODEL_DELTA_VALIDATOR,
+            seed=ML_MODEL_SEED_VALIDATOR
         )
         print("✓ New ML models initialized")
     
@@ -210,8 +250,8 @@ class MLModelState:
                 
                 # Save processed transactions (keep only last 100k to prevent unbounded growth)
                 processed_list = list(self.processed_transactions)
-                if len(processed_list) > 100000:
-                    processed_list = processed_list[-100000:]
+                if len(processed_list) > PROCESSED_MAX_SIZE:
+                    processed_list = processed_list[-PROCESSED_MAX_SIZE:]
                     self.processed_transactions = set(processed_list)
                 
                 with open(self.processed_path, 'w') as f:
@@ -249,7 +289,7 @@ def comprehensive_fraud_detection(
         ml_state.stats['total'] += 1
         
         # Training phase
-        if customer_txn_count < 10:
+        if customer_txn_count < MIN_TRAINING_TRANSACTIONS:
             feats = {
                 'amt': float(amt), 'dist': float(distance), 'hr': float(hour),
                 'n': float(customer_txn_count)
@@ -260,7 +300,7 @@ def comprehensive_fraud_detection(
             except:
                 pass
             
-            if ml_state.stats['total'] % 10000 == 0:
+            if ml_state.stats['total'] % PROGRESS_LOG_INTERVAL == 0:
                 print(f"[TRAIN] {ml_state.stats['total']:,}")
                 ml_state.save_models()
             
@@ -279,7 +319,7 @@ def comprehensive_fraud_detection(
             'hr': float(hour), 'merch_risk': float(merch_fraud_rate),
             'cat_risk': float(cat_fraud_rate), 'online': float(is_online),
             'late_night': float(is_late), 'fraud_history': float(customer_fraud_history),
-            'n': float(min(customer_txn_count, 1000))
+            'n': float(min(customer_txn_count, MAX_TXN_COUNT))
         }
         
         try:
@@ -295,7 +335,7 @@ def comprehensive_fraud_detection(
             ml_score2 = 0.0
         
         ml_score = (ml_score1 + ml_score2) / 2
-        ml_agreement = abs(ml_score1 - ml_score2) < 20
+        ml_agreement = abs(ml_score1 - ml_score2) < ML_AGREEMENT_THRESHOLD
         
 
         ################## Some Bank-set rules ############
@@ -308,32 +348,32 @@ def comprehensive_fraud_detection(
         
         # TIER 1
         extreme_signals = []
-        if z_amt > 4.5:
+        if z_amt > EXTREME_Z_AMT:
             extreme_signals.append(f"MASSIVE_AMT(Z={z_amt:.1f})")
-        elif z_amt > 3.8 and amt > 500:
+        elif z_amt > HUGE_Z_AMT and amt > AMT_MIN_FOR_HUGE:
             extreme_signals.append(f"HUGE_AMT(Z={z_amt:.1f},${amt:.0f})")
         
-        if z_dist > 4:
+        if z_dist > EXTREME_Z_DIST:
             extreme_signals.append(f"EXTREME_DIST(Z={z_dist:.1f})")
-        elif z_dist > 3.2 and distance > 100:
+        elif z_dist > VERY_FAR_Z_DIST and distance > VERY_FAR_DIST:
             extreme_signals.append(f"VERY_FAR({distance:.0f}km)")
         
-        if merch_fraud_rate > 0.4 and merch_total > 50:
+        if merch_fraud_rate > HIGH_MERCH_FRAUD_RATE and merch_total > MIN_MERCH_TOTAL:
             extreme_signals.append(f"FRAUD_MERCHANT({merch_fraud_rate*100:.0f}%)")
         
-        if customer_fraud_history >= 3:
+        if customer_fraud_history >= FRAUD_HISTORY_EXTREME:
             extreme_signals.append(f"FRAUD_HISTORY({customer_fraud_history})")
         
         if len(extreme_signals) >= 2:
             is_suspicious = True
             tier = 1
-            confidence = 95
+            confidence = CONFIDENCE_TIER1_EXTREME
             ml_state.stats['tier1'] += 1
             reasons = extreme_signals[:3]
-        elif len(extreme_signals) >= 1 and ml_score >= 80 and ml_agreement:
+        elif len(extreme_signals) >= 1 and ml_score >= ML_SCORE_HIGH and ml_agreement:
             is_suspicious = True
             tier = 1
-            confidence = 90
+            confidence = CONFIDENCE_TIER1_HIGH
             ml_state.stats['tier1'] += 1
             reasons = extreme_signals + [f"ML{ml_score:.0f}"]
         
@@ -342,65 +382,65 @@ def comprehensive_fraud_detection(
             tier2_score = 0
             tier2_reasons = []
             
-            if z_amt > 3.5:
+            if z_amt > TIER2_Z_AMT_HIGH:
                 tier2_score += 40
                 tier2_reasons.append(f"VeryHighAmt(Z={z_amt:.1f})")
-            elif z_amt > 3:
+            elif z_amt > TIER2_Z_AMT_MEDIUM:
                 tier2_score += 30
                 tier2_reasons.append(f"HighAmt(Z={z_amt:.1f})")
             
-            if z_dist > 3.5:
+            if z_dist > TIER2_Z_DIST_HIGH:
                 tier2_score += 35
                 tier2_reasons.append(f"VeryFar(Z={z_dist:.1f})")
-            elif z_dist > 3:
+            elif z_dist > TIER2_Z_DIST_MEDIUM:
                 tier2_score += 25
                 tier2_reasons.append(f"Far(Z={z_dist:.1f})")
             
-            if merch_fraud_rate > 0.3 and merch_total > 40:
+            if merch_fraud_rate > TIER2_MERCH_FRAUD_RATE and merch_total > TIER2_MIN_MERCH_TOTAL:
                 tier2_score += 35
                 tier2_reasons.append(f"RiskyMerch({merch_fraud_rate*100:.0f}%)")
             
-            if is_online and is_late and amt > 400:
+            if is_online and is_late and amt > TIER2_LATE_ONLINE_AMT:
                 tier2_score += 25
                 tier2_reasons.append(f"LateOnline")
             
-            if customer_fraud_history >= 2:
+            if customer_fraud_history >= TIER2_FRAUD_HISTORY:
                 tier2_score += 30
                 tier2_reasons.append(f"PrevFraud({customer_fraud_history})")
             
-            if z_amt > 2.5 and z_dist > 2.5:
+            if z_amt > TIER2_Z_COMBO and z_dist > TIER2_Z_COMBO:
                 tier2_score += 25
                 tier2_reasons.append("Amt+Dist")
             
-            if ml_score >= 80 and ml_agreement:
+            if ml_score >= TIER2_ML_SCORE_HIGH and ml_agreement:
                 tier2_score += 25
                 tier2_reasons.append(f"ML{ml_score:.0f}")
-            elif ml_score >= 70:
+            elif ml_score >= TIER2_ML_SCORE_MEDIUM:
                 tier2_score += 15
             
-            if tier2_score >= 75:
+            if tier2_score >= TIER2_THRESHOLD:
                 is_suspicious = True
                 tier = 2
-                confidence = 80
+                confidence = CONFIDENCE_TIER2
                 ml_state.stats['tier2'] += 1
                 reasons = tier2_reasons[:4]
         
         # TIER 3
         if not is_suspicious:
-            if ml_score >= 82 and ml_agreement:
+            if ml_score >= TIER3_ML_SCORE and ml_agreement:
                 support_count = sum([
-                    z_amt > 2, z_dist > 2, merch_fraud_rate > 0.15,
-                    cat_fraud_rate > 0.1, customer_fraud_history >= 1
+                    z_amt > TIER3_Z_THRESHOLD, z_dist > TIER3_Z_THRESHOLD, merch_fraud_rate > TIER3_MERCH_FRAUD_THRESHOLD,
+                    cat_fraud_rate > TIER3_CAT_FRAUD_THRESHOLD, customer_fraud_history >= TIER3_FRAUD_HISTORY_MIN
                 ])
                 
-                if support_count >= 2:
+                if support_count >= TIER3_SUPPORT_COUNT:
                     is_suspicious = True
                     tier = 3
-                    confidence = 75
+                    confidence = CONFIDENCE_TIER3
                     ml_state.stats['tier3'] += 1
                     reasons.append(f"ML{ml_score:.0f}")
-                    if z_amt > 2.5: reasons.append(f"HighAmt")
-                    if z_dist > 2.5: reasons.append(f"FarLoc")
+                    if z_amt > TIER3_Z_THRESHOLD: reasons.append(f"HighAmt")
+                    if z_dist > TIER3_Z_THRESHOLD: reasons.append(f"FarLoc")
         
         reason_str = "|".join(reasons[:4]) if reasons else f"T{tier}"
         
@@ -412,7 +452,7 @@ def comprehensive_fraud_detection(
             pass
         
         # Periodic save and progress
-        if ml_state.stats['total'] % 10000 == 0:
+        if ml_state.stats['total'] % PROGRESS_LOG_INTERVAL == 0:
             print(f"[PROGRESS] {ml_state.stats['total']:,} | Alerts: {ml_state.stats['alerts']:,}")
             ml_state.save_models()
         
@@ -420,7 +460,7 @@ def comprehensive_fraud_detection(
         if is_suspicious:
             ml_state.stats['alerts'] += 1
             
-            if ml_state.stats['alerts'] % 50 == 0:
+            if ml_state.stats['alerts'] % ALERT_LOG_INTERVAL == 0:
                 print(f"[ALERT] #{ml_state.stats['alerts']:>6} | T{tier} | {reason_str[:35]}")
             
             return json.dumps({
@@ -501,7 +541,7 @@ def run_detector():
     ).select(
         merchant=pw.this.merchant,
         total=pw.this.total,
-        fraud_rate=pw.apply(lambda f, t: f / t if t > 30 else 0.0,
+        fraud_rate=pw.apply(lambda f, t: f / t if t > MIN_MERCH_TOTAL_FOR_RATE else 0.0,
                            pw.this.fraud_count, pw.this.total)
     )
     
@@ -512,7 +552,7 @@ def run_detector():
         fraud_count=pw.reducers.sum(pw.this.is_fraud)
     ).select(
         category=pw.this.category,
-        fraud_rate=pw.apply(lambda f, t: f / t if t > 100 else 0.0,
+        fraud_rate=pw.apply(lambda f, t: f / t if t > MIN_CAT_TOTAL_FOR_RATE else 0.0,
                            pw.this.fraud_count, pw.this.total)
     )
     

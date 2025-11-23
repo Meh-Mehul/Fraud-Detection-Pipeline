@@ -1,9 +1,10 @@
 # publisher_common.py
 import pathway as pw
+from shared.config import NATS_URI, ORIGINAL_DATA_FILE, PUBLISHER_STREAM_FILE
 
-NATS_URI = "nats://localhost:4222"
-ORIGINAL_FILE = "fraudTrain.csv"
-TEMP_STREAM_FILE = "fraud_stream.csv"
+# For backwards compatibility - these are imported from config
+ORIGINAL_FILE = ORIGINAL_DATA_FILE
+TEMP_STREAM_FILE = PUBLISHER_STREAM_FILE
 
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)

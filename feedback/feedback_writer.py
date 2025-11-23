@@ -13,14 +13,22 @@ from river import tree, preprocessing, compose
 from shared.schema import TransactionSchema
 from shared.model_store import model_store
 from shared import stats_store
-
-NATS_URI = "nats://localhost:4222"
-FEEDBACK_TOPIC = "fraud.feedback"
-
-PERSIST_DIR = Path("pipeline/pathway_persistence")
-CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
-    pw.persistence.Backend.filesystem(str(PERSIST_DIR / "checkpoints_feedback")),
-    snapshot_interval_ms=10000
+from shared.config import (
+    NATS_URI,
+    FEEDBACK_TOPIC,
+    DETECTOR_PERSIST_DIR,
+    FEEDBACK_CHECKPOINT_CONFIG,
+    ML_MODEL_GRACE_PERIOD_MAIN,
+    ML_MODEL_DELTA_MAIN,
+    ML_MODEL_SEED_MAIN,
+    ML_MODEL_GRACE_PERIOD_VALIDATOR,
+    ML_MODEL_DELTA_VALIDATOR,
+    ML_MODEL_SEED_VALIDATOR,
+    ONLINE_CATEGORIES,
+    LATE_NIGHT_START,
+    LATE_NIGHT_END,
+    MAX_TXN_COUNT,
+    MODEL_SAVE_INTERVAL
 )
 
 # local in-memory models (loaded from model_store if present; feedback writer is sole saver)
@@ -33,12 +41,12 @@ class Trainer:
         else:
             self.model_main = compose.Pipeline(
                 preprocessing.StandardScaler(),
-                tree.HoeffdingAdaptiveTreeClassifier(grace_period=200, delta=1e-5, seed=42)
+                tree.HoeffdingAdaptiveTreeClassifier(grace_period=ML_MODEL_GRACE_PERIOD_MAIN, delta=ML_MODEL_DELTA_MAIN, seed=ML_MODEL_SEED_MAIN)
             )
-            self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(grace_period=150, delta=1e-4, seed=123)
+            self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(grace_period=ML_MODEL_GRACE_PERIOD_VALIDATOR, delta=ML_MODEL_DELTA_VALIDATOR, seed=ML_MODEL_SEED_VALIDATOR)
             print("✓ New trainer models initialized.")
         self.updates = 0
-        self.save_every = 50
+        self.save_every = MODEL_SAVE_INTERVAL
 
     def learn(self, feats: dict, label: int):
         try:
@@ -109,10 +117,10 @@ def feedback_train(trans_num, cc_num, amt, lat, long, merch_lat, merch_long, uni
         "hr": float(hour),
         "merch_risk": float(merch["fraud_rate"]),
         "cat_risk": float(cat["fraud_rate"]),
-        "online": float(1 if category in ["shopping_net", "misc_net", "grocery_net"] else 0),
-        "late_night": float(1 if 1 <= hour <= 5 else 0),
+        "online": float(1 if category in ONLINE_CATEGORIES else 0),
+        "late_night": float(1 if LATE_NIGHT_START <= hour <= LATE_NIGHT_END else 0),
         "fraud_history": float(cust["fraud_history"]),
-        "n": float(min(cust["txn_count"], 1000))
+        "n": float(min(cust["txn_count"], MAX_TXN_COUNT))
     }
 
     # Train
@@ -164,4 +172,4 @@ def run_feedback_writer():
     )
 
     # We don't publish anything; this pipeline exists to train & persist model/stats
-    pw.run(persistence_config=CHECKPOINT_CONFIG)
+    pw.run(persistence_config=FEEDBACK_CHECKPOINT_CONFIG)
