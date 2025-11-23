@@ -1,7 +1,7 @@
-"""
-PATHWAY TRANSACTION PUBLISHER - NATS VERSION (FIXED)
-Streams transactions from CSV to NATS with realistic rate limiting
-"""
+## This file contains the main publisher logic to stream the static csv dataset
+## For now, we have just read it from a single file, in final prodcut we plan to make this publishing happen from a single main file running inside docker.
+
+
 import pathway as pw
 from datetime import datetime
 
@@ -9,6 +9,7 @@ from datetime import datetime
 NATS_URI = "nats://localhost:4222"
 NATS_TOPIC = "fraud.transactions"
 
+## For now, the structure of this table is accroding to our dataset used, but this may be configured according to the usecase and data-availability of the bank.
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
@@ -44,9 +45,8 @@ def run_publisher():
     print(f"  Topic: {NATS_TOPIC}")
     print()
     
-    # Read CSV as streaming source
     transactions = pw.io.csv.read(
-        'fraudTrain.csv',
+        'fraud_stream.csv',
         schema=TransactionSchema,
         mode='streaming',
         autocommit_duration_ms=100
@@ -58,8 +58,6 @@ def run_publisher():
     print("🚀 Transaction stream active...")
     print("   Press Ctrl+C to stop")
     print()
-    
-    # Write to NATS - FIXED: correct parameter names
     pw.io.nats.write(
         transactions,
         uri=NATS_URI,
@@ -69,15 +67,3 @@ def run_publisher():
     # Run pipeline
     pw.run()
 
-
-if __name__ == "__main__":
-    try:
-        run_publisher()
-    except KeyboardInterrupt:
-        print("\n\n✓ Publisher stopped")
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        print("\nMake sure NATS server is running:")
-        print("  nats-server")
-        import traceback
-        traceback.print_exc()

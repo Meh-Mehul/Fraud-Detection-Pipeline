@@ -1,7 +1,8 @@
 """
-PATHWAY-NATIVE FRAUD DETECTOR v9.1 - NATS VERSION (FIXED)
 Real-time fraud detection with NATS messaging
 """
+## This is a simpler detector model we have made till now.
+## For now, it checks some (assumed) bank-rules, as well as trains an ML-model (via ground truths from the datasets, with pathway persistence)
 
 import pathway as pw
 import math
@@ -11,9 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from river import tree, preprocessing, compose
 
-# ============================================================================
-# NATS CONFIGURATION (FIXED)
-# ============================================================================
 
 NATS_URI = "nats://localhost:4222"
 NATS_INPUT_TOPIC = "fraud.transactions"
@@ -23,7 +21,6 @@ NATS_RESULTS_TOPIC = "fraud.results"
 # ============================================================================
 # PERSISTENCE CONFIGURATION
 # ============================================================================
-
 PERSISTENCE_DIR = Path("pathway_persistence")
 PERSISTENCE_DIR.mkdir(exist_ok=True)
 
@@ -36,7 +33,7 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
 # ============================================================================
 # PATHWAY SCHEMA WITH EXPLICIT TYPES
 # ============================================================================
-
+## This is same as the synthetic dataset we are testing on, but it may be configured according to bank usage as well
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
@@ -126,7 +123,6 @@ def parse_and_filter_alert(alert_json: str):
 # ============================================================================
 # ML MODEL MANAGEMENT WITH DEDUPLICATION TRACKING
 # ============================================================================
-
 class MLModelState:
     """ML models with persistence and deduplication support"""
     
@@ -230,8 +226,6 @@ class MLModelState:
 
 
 ml_state = MLModelState()
-
-
 @pw.udf
 def comprehensive_fraud_detection(
     trans_num: str, cc_num: int, merchant: str, category: str,
@@ -255,7 +249,7 @@ def comprehensive_fraud_detection(
         ml_state.stats['total'] += 1
         
         # Training phase
-        if customer_txn_count < 20:
+        if customer_txn_count < 10:
             feats = {
                 'amt': float(amt), 'dist': float(distance), 'hr': float(hour),
                 'n': float(customer_txn_count)
@@ -273,6 +267,7 @@ def comprehensive_fraud_detection(
             return json.dumps({'is_alert': False, 'training': True})
         
         # Feature engineering
+        # Some z-Score tests
         z_amt = (amt - customer_avg_amt) / customer_std_amt if customer_std_amt > 0 else 0
         amt_ratio = amt / customer_avg_amt if customer_avg_amt > 0 else 1
         z_dist = (distance - customer_avg_dist) / customer_std_dist if customer_std_dist > 0 else 0
@@ -302,6 +297,9 @@ def comprehensive_fraud_detection(
         ml_score = (ml_score1 + ml_score2) / 2
         ml_agreement = abs(ml_score1 - ml_score2) < 20
         
+
+        ################## Some Bank-set rules ############
+        ## For now, we have set them here, but in our final pipeline, they may be configurable as well.        
         # Tier-based detection
         is_suspicious = False
         tier = 0
@@ -618,38 +616,3 @@ def run_detector():
         monitoring_level=pw.MonitoringLevel.NONE
     )
 
-
-if __name__ == "__main__":
-    import os
-    import signal
-    import sys
-    
-    def signal_handler(sig, frame):
-        print("\n\n═══════════════════════════════════════════════════════════")
-        print("    DETECTOR SHUTDOWN - SAVING STATE...")
-        print("═══════════════════════════════════════════════════════════")
-        
-        ml_state.save_models(force=True)
-        
-        print(f"Total Processed: {ml_state.stats['total']:,}")
-        print(f"Unique Transactions: {len(ml_state.processed_transactions):,}")
-        print(f"Alerts Generated: {ml_state.stats['alerts']:,}")
-        print(f"  - Tier 1: {ml_state.stats['tier1']:,}")
-        print(f"  - Tier 2: {ml_state.stats['tier2']:,}")
-        print(f"  - Tier 3: {ml_state.stats['tier3']:,}")
-        print(f"💾 State saved to: {PERSISTENCE_DIR}/")
-        print("═══════════════════════════════════════════════════════════")
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    
-    try:
-        run_detector()
-    except KeyboardInterrupt:
-        signal_handler(None, None)
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        ml_state.save_models(force=True)
-        import traceback
-        traceback.print_exc()
-        print("\nMake sure NATS server is running: nats-server")
