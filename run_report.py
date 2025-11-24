@@ -1,4 +1,4 @@
-from report.pathway_nats_report import run_report_generator
+from report.pathway_nats_report_website import run_report_generator
 ## Main function to call to start reading from fraud stream and generate reports.
 if __name__ == "__main__":
     try:
