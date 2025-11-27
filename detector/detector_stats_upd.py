@@ -1,20 +1,19 @@
-# pipeline/stats/stats_updater.py
+# pipeline/stats/stats_updater_redis.py
 """
-Stats updater node: reads transactions and updates aggregated stats.
-This ensures stats are always up-to-date for the detector.
+Stats updater node: reads transactions from NATS and updates Redis stats.
+This runs FIRST to initialize Redis and keep stats updated.
 """
 import pathway as pw
 from pathlib import Path
 import sys
 import math
-from datetime import datetime
 
 # Add parent to path for imports
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
 from shared.schema import TransactionSchema
-from shared import stats_store
+from shared import redis_stats_store
 
 NATS_URI = "nats://localhost:4222"
 INPUT_TOPIC = "fraud.transactions"
@@ -26,13 +25,21 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
     snapshot_interval_ms=10000
 )
 
+# Global Redis store
+redis_store = redis_stats_store.get_store()
+
+# Counters
+update_counter = {"total": 0}
+
 
 @pw.udf
-def update_stats(cc_num, amt, lat, lon, merch_lat, merch_long, category, merchant):
+def update_stats_redis(trans_num, cc_num, amt, lat, lon, merch_lat, merch_long, category, merchant):
     """
-    Update stats for customer, merchant, and category.
-    Returns a status string to confirm execution.
+    Update Redis stats for customer, merchant, and category.
+    Returns a status string to force execution.
     """
+    update_counter["total"] += 1
+    
     # Compute distance
     try:
         d_lat = math.radians(float(merch_lat) - float(lat))
@@ -45,29 +52,52 @@ def update_stats(cc_num, amt, lat, lon, merch_lat, merch_long, category, merchan
         )
         distance = 6371 * 2 * math.asin(math.sqrt(a))
     except Exception as e:
-        print(f"⚠️  Distance calculation error: {e}")
         distance = 0.0
     
-    # Update stats (is_fraud=0 since this is just transaction data, not feedback)
+    # Update Redis stats (is_fraud=0 since this is transaction data, not feedback)
     try:
-        stats_store.update_customer(str(cc_num), float(amt), float(distance), 0)
-        stats_store.update_merchant(str(merchant), float(amt), 0)
-        stats_store.update_category(str(category), 0)
-        return f"updated_{cc_num}"  # Return unique value to force execution
+        redis_store.update_customer(str(cc_num), float(amt), float(distance), 0)
+        redis_store.update_merchant(str(merchant), float(amt), 0)
+        redis_store.update_category(str(category), 0)
+        
+        # Log progress
+        if update_counter["total"] % 1000 == 0:
+            summary = redis_store.get_stats_summary()
+            print(f"[STATS] Updated {update_counter['total']:,} txns | "
+                  f"Redis: {summary['customers']:,} customers, "
+                  f"{summary['merchants']:,} merchants")
+        
+        return f"ok_{trans_num}"
     except Exception as e:
-        print(f"❌ Stats update error: {e}")
-        return f"error_{cc_num}"
+        print(f"❌ Redis update error for {trans_num}: {e}")
+        return f"error_{trans_num}"
 
 
 def run_stats_node():
     print("═══════════════════════════════════════════")
-    print("      STATS UPDATER NODE                   ")
+    print("   STATS UPDATER NODE (Redis)")
     print("═══════════════════════════════════════════")
     print(f"Input topic: {INPUT_TOPIC}")
-    print(f"Stats file: {PERSIST_DIR / 'stats_store.json'}")
+    print(f"Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
+    print()
+    
+    # Initialize Redis - load from JSON if exists
+    json_path = PERSIST_DIR / "stats_store.json"
+    if json_path.exists():
+        print("📥 Loading initial stats from JSON into Redis...")
+        loaded = redis_store.load_from_json(str(json_path))
+        summary = redis_store.get_stats_summary()
+        print(f"✓ Loaded {loaded} entities")
+        print(f"   Customers: {summary['customers']:,}")
+        print(f"   Merchants: {summary['merchants']:,}")
+        print(f"   Categories: {summary['categories']:,}")
+    else:
+        print("⚠️  No existing stats.json - starting fresh")
+    
+    print()
     print("───────────────────────────────────────────")
     
-    # Read transactions
+    # Read transactions from NATS
     tx = pw.io.nats.read(
         uri=NATS_URI,
         topic=INPUT_TOPIC,
@@ -76,11 +106,12 @@ def run_stats_node():
         persistent_id="stats_updater"
     )
     
-    # Apply stats update UDF
+    # Apply Redis stats update UDF
     updated = tx.select(
         trans_num=pw.this.trans_num,
         cc_num=pw.this.cc_num,
-        update_status=update_stats(
+        update_status=update_stats_redis(
+            pw.this.trans_num,
             pw.this.cc_num,
             pw.this.amt,
             pw.this.lat,
@@ -92,18 +123,13 @@ def run_stats_node():
         )
     )
     
-    # CRITICAL: Write to a sink to force UDF execution
-    # Option 1: Write to NATS (creates audit trail)
-    pw.io.nats.write(
-        updated,
-        uri=NATS_URI,
-        topic="stats.updates"
-    )
+    # Write to null sink to force execution
+    pw.io.null.write(updated)
     
-    # Option 2: Also write to null sink if you don't need the audit trail
-    # pw.io.null.write(updated)
+    print("✓ Stats updater running - updating Redis in real-time")
+    print("✓ Detector and feedback nodes will read from Redis")
+    print()
     
-    print("✓ Stats updater running...")
     pw.run(persistence_config=CHECKPOINT_CONFIG)
 
 

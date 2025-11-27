@@ -19,6 +19,7 @@ For now, we are learning through the live-transaction's target variable and trai
 3. Run ```nats-server``` in a terminal.
 4. Run the python files in the following order (all in different terminals):
 -      python3 pretrain.py (wait till it ends and then run the others)
+-      after pretraining, to load data into redis, run python3 redis_manager.py load
 -      python3 run_detector.py
 -      python3 run_report.py
 -      python3 run_stats_updater.py

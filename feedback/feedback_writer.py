@@ -1,8 +1,7 @@
-# pipeline/feedback/feedback_writer.py
+# pipeline/feedback/feedback_writer_redis.py
 """
 Feedback writer: reads fraud.feedback stream (with ground truth),
-updates aggregated stats AND trains the shared model.
-Saves model periodically to shared/model_store.
+updates Redis stats AND trains the shared model.
 """
 from pathlib import Path
 import sys
@@ -10,13 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
 import pathway as pw
-import json, pickle, time
+import math
 from datetime import datetime
 from river import tree, preprocessing, compose
 
 from shared.schema import FeedBackSchema
 from shared import model_store
-from shared import stats_store
+from shared import redis_stats_store
 
 NATS_URI = "nats://localhost:4222"
 FEEDBACK_TOPIC = "fraud.feedback"
@@ -26,6 +25,10 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
     pw.persistence.Backend.filesystem(str(PERSIST_DIR / "checkpoints_feedback")),
     snapshot_interval_ms=10000
 )
+
+# Global Redis store
+redis_store = redis_stats_store.get_store()
+
 
 # ───────────────────────────────────────────────
 # TRAINER WITH STATS TRACKING
@@ -85,20 +88,6 @@ trainer = Trainer()
 # ───────────────────────────────────────────────
 # HELPERS
 # ───────────────────────────────────────────────
-import math
-
-@pw.udf
-def haversine(lat1, lon1, lat2, lon2):
-    try:
-        d_lat = math.radians(lat2 - lat1)
-        d_lon = math.radians(lon2 - lon1)
-        a = (math.sin(d_lat/2)**2 +
-             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
-             math.sin(d_lon/2)**2)
-        return 6371 * 2 * math.asin(math.sqrt(a))
-    except:
-        return 0.0
-
 
 @pw.udf
 def extract_hour(unix_time: int) -> int:
@@ -109,14 +98,14 @@ def extract_hour(unix_time: int) -> int:
 
 
 # ───────────────────────────────────────────────
-# TRAINING UDF WITH STATS UPDATE
+# TRAINING UDF WITH REDIS STATS UPDATE
 # ───────────────────────────────────────────────
 @pw.udf
 def feedback_train_and_update(trans_num, cc_num, amt, lat, long, merch_lat, merch_long, 
                                unix_time, category, merchant, is_fraud):
     """
-    Train model AND update stats with ground truth labels.
-    This is critical - we need fraud_history to be updated!
+    Train model AND update Redis stats with ground truth labels.
+    This is critical - fraud_history updates here!
     """
     
     # Compute distance & hour
@@ -135,10 +124,10 @@ def feedback_train_and_update(trans_num, cc_num, amt, lat, long, merch_lat, merc
     except:
         distance = 0.0
 
-    # Pull existing aggregates BEFORE updating
-    cust = stats_store.get_customer_profile(cc_num)
-    merch = stats_store.get_merchant_profile(merchant)
-    cat = stats_store.get_category_profile(category)
+    # Pull existing aggregates from REDIS BEFORE updating
+    cust = redis_store.get_customer_profile(cc_num)
+    merch = redis_store.get_merchant_profile(merchant)
+    cat = redis_store.get_category_profile(category)
 
     # Build features
     feats = {
@@ -162,14 +151,14 @@ def feedback_train_and_update(trans_num, cc_num, amt, lat, long, merch_lat, merc
     except Exception as e:
         print(f"❌ Training error on {trans_num}: {e}")
 
-    # NOW UPDATE STATS with ground truth
-    # This is CRITICAL - without this, fraud_history never increases!
+    # NOW UPDATE REDIS STATS with ground truth
+    # CRITICAL: This updates fraud_history when is_fraud=1
     try:
-        stats_store.update_customer(str(cc_num), float(amt), float(distance), int(is_fraud))
-        stats_store.update_merchant(str(merchant), float(amt), int(is_fraud))
-        stats_store.update_category(str(category), int(is_fraud))
+        redis_store.update_customer(str(cc_num), float(amt), float(distance), int(is_fraud))
+        redis_store.update_merchant(str(merchant), float(amt), int(is_fraud))
+        redis_store.update_category(str(category), int(is_fraud))
     except Exception as e:
-        print(f"❌ Stats update error on {trans_num}: {e}")
+        print(f"❌ Redis stats update error on {trans_num}: {e}")
 
     return None
 
@@ -179,13 +168,26 @@ def feedback_train_and_update(trans_num, cc_num, amt, lat, long, merch_lat, merc
 # ───────────────────────────────────────────────
 def run_feedback_writer():
     print("══════════════════════════════════════════")
-    print("   FEEDBACK TRAINER (Model + Stats)       ")
+    print("   FEEDBACK TRAINER (Model + Redis Stats)")
     print("══════════════════════════════════════════")
     print(f"Listening on: {FEEDBACK_TOPIC}")
     print(f"Model file: {PERSIST_DIR / 'ml_models.pkl'}")
-    print(f"Stats file: {PERSIST_DIR / 'stats_store.json'}")
-    print("Persistence: pathway_persistence/")
+    print(f"Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
     print()
+    
+    # Check Redis connection
+    if redis_store.health_check():
+        summary = redis_store.get_stats_summary()
+        print(f"✓ Redis connected")
+        print(f"   Customers: {summary['customers']:,}")
+        print(f"   Merchants: {summary['merchants']:,}")
+        print(f"   Categories: {summary['categories']:,}")
+    else:
+        print("❌ Redis not available!")
+        return
+    
+    print()
+    print("───────────────────────────────────────────")
 
     feedback = pw.io.nats.read(
         uri=NATS_URI,
@@ -197,8 +199,7 @@ def run_feedback_writer():
 
     enriched = feedback.select(
         *pw.this,
-        hour=extract_hour(pw.this.unix_time),
-        distance=haversine(pw.this.lat, pw.this.long, pw.this.merch_lat, pw.this.merch_long)
+        hour=extract_hour(pw.this.unix_time)
     )
 
     trained = enriched.select(
@@ -215,6 +216,9 @@ def run_feedback_writer():
     pw.io.null.write(trained)
     
     print("✓ Feedback writer running...")
+    print("✓ Training model and updating Redis with ground truth")
+    print()
+    
     pw.run(persistence_config=CHECKPOINT_CONFIG)
 
 
