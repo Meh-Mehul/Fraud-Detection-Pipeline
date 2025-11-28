@@ -2,7 +2,7 @@
 Features:
 - Subscribes to fraud alert stream via NATS
 - Generates bank-grade PDF investigation reports
-- Comprehensive fraud indicator decoding
+- Comprehensive fraud indicator decoding (Loaded from Shared JSON)
 - Detailed risk assessment and investigation protocols
 - Tracks unique fraud patterns
 """
@@ -10,18 +10,41 @@ Features:
 import pathway as pw
 import os
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
+# ----------------------------------------------------------------------------
+# SETUP: Import Shared Rules Loader
+# ----------------------------------------------------------------------------
+# Add the parent directory to sys.path to allow importing from 'shared'
+# This assumes structure:
+#   /report/pathway_nats_report.py
+#   /shared/rules_loader.py
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent
+shared_path = project_root / "shared"
+
+if str(shared_path) not in sys.path:
+    sys.path.append(str(shared_path))
+
+try:
+    from rules_loader import get_rules_loader
+    print("✓ Successfully imported shared rules loader")
+except ImportError:
+    print(f"❌ Could not import rules_loader from {shared_path}")
+    print("Please ensure 'rules_loader.py' is in the 'shared' folder.")
+    sys.exit(1)
+
+# ----------------------------------------------------------------------------
 # NATS Configuration
+# ----------------------------------------------------------------------------
 NATS_URI = "nats://localhost:4222"
 NATS_ALERTS_TOPIC = "fraud.alerts"
 NATS_REPORTS_TOPIC = "fraud.reports"
 
 PDF_AVAILABLE = False
 try:
-    ## We found the ReportLab  library to be very useful in PDF-report making, we have used Pathway Store to store he context and used it 
-    ## as well as model decision info for making the report, using report lab makes it very easy for us to generate pdfs on-the-go.
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
@@ -33,6 +56,7 @@ try:
     PDF_AVAILABLE = True
 except ImportError:
     print("⚠️  Install reportlab: pip install reportlab")
+
 print("═══════════════════════════════════════════════════════════")
 print("  INTELLIGENT FRAUD REPORT GENERATOR")
 print("═══════════════════════════════════════════════════════════")
@@ -43,14 +67,14 @@ else:
     print("⚠️  PDF generation disabled - install reportlab")
 
 print("✓ Real-time NATS streaming")
-print("✓ Comprehensive fraud analysis")
+print("✓ Rules loaded from external JSON")
 print()
 
 
 # ============================================================================
 # REPORT GENERATION
 # ============================================================================
-## Template class needed for report Lab
+
 class HeaderFooterCanvas(canvas.Canvas):
     """Custom canvas for professional headers and footers"""
     
@@ -145,6 +169,9 @@ class ReportGenerator:
         self.report_count = 0
         self.total_alerts = 0
         
+        # Initialize the shared rules loader
+        self.rules_loader = get_rules_loader()
+        
         print(f"✓ Reports directory: {self.reports_dir}/")
         print()
     
@@ -157,256 +184,46 @@ class ReportGenerator:
         return normalized
     
     def decode_fraud_indicators(self, reasons, tier):
-        """Decode fraud indicators into human-readable explanations"""
+        """Decode fraud indicators using the shared Rules Loader"""
         
         indicators = reasons.split('|')
-        
-        # Comprehensive indicator dictionary
-        indicator_details = {
-            # Velocity/Burst Indicators
-            'EXTREME_BURST': {
-                'name': 'Extreme Transaction Burst',
-                'severity': 'CRITICAL',
-                'description': '4+ transactions within 5 minutes - typical card testing or fraud spree',
-                'risk': 'This pattern is highly indicative of automated fraud tools or stolen card testing'
-            },
-            'MAJOR_BURST': {
-                'name': 'Major Transaction Burst',
-                'severity': 'CRITICAL',
-                'description': '5+ transactions within 10 minutes - indicates automated fraud or stolen card',
-                'risk': 'Rapid succession suggests unauthorized access with intent to maximize damage before detection'
-            },
-            'BURST': {
-                'name': 'Transaction Burst',
-                'severity': 'HIGH',
-                'description': '3+ transactions within 5 minutes - abnormal spending velocity',
-                'risk': 'Human shoppers rarely complete multiple purchases this quickly'
-            },
-            'FastBurst': {
-                'name': 'Fast Burst Pattern',
-                'severity': 'HIGH',
-                'description': '4+ transactions within 10 minutes - rapid succession pattern',
-                'risk': 'Suggests coordinated fraud attack or card testing operation'
-            },
-            'Rapid': {
-                'name': 'Rapid Transactions',
-                'severity': 'MEDIUM',
-                'description': '5+ transactions within 15 minutes - elevated transaction frequency',
-                'risk': 'Above normal velocity indicating possible unauthorized use'
-            },
-            'Fast': {
-                'name': 'Fast Transaction Pattern',
-                'severity': 'MEDIUM',
-                'description': '2+ transactions within 10 minutes - above normal velocity',
-                'risk': 'Faster than typical customer behavior'
-            },
-            
-            # Amount Anomalies
-            'MASSIVE_AMT': {
-                'name': 'Massive Amount Spike',
-                'severity': 'CRITICAL',
-                'description': 'Transaction 4.5+ standard deviations above customer average',
-                'risk': 'Extreme deviation suggests fraudster attempting to maximize stolen card value'
-            },
-            'HUGE_AMT': {
-                'name': 'Huge Amount Anomaly',
-                'severity': 'CRITICAL',
-                'description': 'Transaction 3.8+ standard deviations above norm, over $500',
-                'risk': 'Significantly higher than customer norm, likely unauthorized large purchase'
-            },
-            'VeryHighAmt': {
-                'name': 'Very High Amount',
-                'severity': 'HIGH',
-                'description': 'Transaction 3.5+ standard deviations above customer average',
-                'risk': 'Purchase amount drastically outside normal spending pattern'
-            },
-            'HighAmt': {
-                'name': 'High Amount',
-                'severity': 'HIGH',
-                'description': 'Transaction 3+ standard deviations above customer average',
-                'risk': 'Unusually large transaction for this customer'
-            },
-            'UnusualAmt': {
-                'name': 'Unusual Amount',
-                'severity': 'MEDIUM',
-                'description': 'Transaction 2.5+ standard deviations above norm, top 10% of customer history',
-                'risk': 'In the highest tier of customer spending, warrants verification'
-            },
-            'NewMerch+High': {
-                'name': 'New Merchant with High Amount',
-                'severity': 'HIGH',
-                'description': 'First-time transaction at merchant with amount over $500',
-                'risk': 'Fraudsters often test stolen cards at new merchants with high-value purchases'
-            },
-            'RareCat+High': {
-                'name': 'Rare Category with High Amount',
-                'severity': 'HIGH',
-                'description': 'Unusual category (< 5% of history) with transaction over $600',
-                'risk': 'Customer suddenly making large purchase in unfamiliar category suggests card misuse'
-            },
-            
-            # Distance/Location Anomalies
-            'EXTREME_DIST': {
-                'name': 'Extreme Distance',
-                'severity': 'CRITICAL',
-                'description': 'Transaction 4+ standard deviations from home location',
-                'risk': 'Geographically impossible or highly unlikely location for this customer'
-            },
-            'VERY_FAR': {
-                'name': 'Very Far Location',
-                'severity': 'CRITICAL',
-                'description': 'Transaction 3.5+ standard deviations from typical locations, over 100km',
-                'risk': 'Purchase location far outside customer normal geographic range'
-            },
-            'VeryFar': {
-                'name': 'Very Far Distance',
-                'severity': 'HIGH',
-                'description': 'Transaction 3.5+ standard deviations from customer home',
-                'risk': 'Location significantly distant from customer home base'
-            },
-            'Far': {
-                'name': 'Far Location',
-                'severity': 'HIGH',
-                'description': 'Transaction 3+ standard deviations from typical location range',
-                'risk': 'Outside customer normal shopping area'
-            },
-            'UnusualDist': {
-                'name': 'Unusual Distance',
-                'severity': 'MEDIUM',
-                'description': 'Transaction 2.5+ standard deviations from norm, top 10% distance',
-                'risk': 'Farther than 90% of customer transactions'
-            },
-            'FarLoc': {
-                'name': 'Far Location Transaction',
-                'severity': 'MEDIUM',
-                'description': 'Transaction significantly further than customer norm',
-                'risk': 'May indicate card used by unauthorized party in different location'
-            },
-            
-            # Merchant Risk
-            'FRAUD_MERCHANT': {
-                'name': 'High-Fraud Merchant',
-                'severity': 'CRITICAL',
-                'description': 'Merchant has 40%+ fraud rate across 50+ transactions',
-                'risk': 'This merchant is a known fraud hotspot with very high historical fraud rate'
-            },
-            'BAD_MERCHANT': {
-                'name': 'Risky Merchant',
-                'severity': 'HIGH',
-                'description': 'Merchant has 35%+ fraud rate across 40+ transactions',
-                'risk': 'Merchant has elevated fraud risk based on historical patterns'
-            },
-            'RiskyMerch': {
-                'name': 'Risky Merchant Category',
-                'severity': 'HIGH',
-                'description': 'Merchant has 30%+ fraud rate across 40+ transactions',
-                'risk': 'Merchant associated with above-average fraudulent transactions'
-            },
-            
-            # Customer History
-            'FRAUD_HISTORY': {
-                'name': 'Multiple Fraud History',
-                'severity': 'CRITICAL',
-                'description': 'Customer has 3+ confirmed previous fraud incidents',
-                'risk': 'Account has been compromised multiple times - may indicate repeat targeting or vulnerability'
-            },
-            'REPEAT_FRAUD': {
-                'name': 'Repeat Fraud Pattern',
-                'severity': 'CRITICAL',
-                'description': '2+ previous frauds with current high amount anomaly',
-                'risk': 'Pattern matches previous fraud incidents on this account'
-            },
-            'PrevFraud': {
-                'name': 'Previous Fraud',
-                'severity': 'HIGH',
-                'description': 'Customer has 2+ confirmed fraud incidents in history',
-                'risk': 'Account has been compromised before, making it higher risk for repeat fraud'
-            },
-            
-            # Pattern Breaks
-            'NewMerch': {
-                'name': 'New Merchant',
-                'severity': 'MEDIUM',
-                'description': 'First transaction ever at this merchant',
-                'risk': 'Fraudsters often use stolen cards at merchants customer has never visited'
-            },
-            'RareCat': {
-                'name': 'Rare Category',
-                'severity': 'MEDIUM',
-                'description': 'Unusual spending category for this customer (< 5% of history)',
-                'risk': 'Purchase in category customer rarely uses'
-            },
-            'UnusualHour': {
-                'name': 'Unusual Hour',
-                'severity': 'MEDIUM',
-                'description': 'Transaction at atypical time for customer (< 3% of history)',
-                'risk': 'Time of day inconsistent with customer shopping habits'
-            },
-            'LateOnline': {
-                'name': 'Late Night Online Purchase',
-                'severity': 'MEDIUM',
-                'description': 'Online purchase between 1-5 AM with amount over $400',
-                'risk': 'Late-night online purchases are common in card-not-present fraud'
-            },
-            
-            # Combination Patterns
-            'Burst+Amt': {
-                'name': 'Burst with Amount Spike',
-                'severity': 'HIGH',
-                'description': '3+ transactions in 10 minutes AND amount 2.5+ standard deviations above norm',
-                'risk': 'Combination of velocity and amount anomalies strongly suggests fraud'
-            },
-            'Amt+Dist': {
-                'name': 'Amount + Distance Anomaly',
-                'severity': 'HIGH',
-                'description': 'Both amount AND distance 2.5+ standard deviations above customer norm',
-                'risk': 'Dual anomaly (location + spending) is classic fraud indicator'
-            },
-            
-            # ML Detection
-            'ML': {
-                'name': 'Machine Learning Detection',
-                'severity': 'VARIES',
-                'description': 'ML models detected anomaly pattern',
-                'risk': 'Advanced algorithms identified suspicious patterns not obvious to rule-based systems'
-            }
-        }
-        
         decoded = []
-        severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0}
+        severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'UNKNOWN': 0}
         
         for indicator in indicators:
             parts = indicator.split('(')
             base = parts[0]
             value = parts[1].rstrip(')') if len(parts) > 1 else None
             
-            if base in indicator_details:
-                detail = indicator_details[base]
-                severity_counts[detail['severity']] += 1
-                
-                decoded_info = {
-                    'indicator': indicator,
-                    'base': base,
-                    'value': value,
-                    'name': detail['name'],
-                    'severity': detail['severity'],
-                    'description': detail['description'],
-                    'risk': detail['risk']
-                }
+            # Use the Loader to get details
+            if base.startswith('ML'):
+                 # Special handling for ML using the loader's method
+                decoded_info = self.rules_loader.decode_ml_indicator(base, value)
                 decoded.append(decoded_info)
+                severity_counts[decoded_info['severity']] = severity_counts.get(decoded_info['severity'], 0) + 1
             else:
-                if base.startswith('ML'):
-                    score = base[2:] if len(base) > 2 else value
-                    decoded.append({
+                detail = self.rules_loader.get_indicator(base)
+                
+                if detail:
+                    # Found in JSON
+                    severity = detail.get('severity', 'UNKNOWN')
+                    if severity in severity_counts:
+                        severity_counts[severity] += 1
+                    else:
+                        severity_counts['UNKNOWN'] += 1
+                    
+                    decoded_info = {
                         'indicator': indicator,
-                        'base': 'ML',
-                        'value': score,
-                        'name': 'ML Detection',
-                        'severity': 'HIGH' if score and float(score) > 80 else 'MEDIUM',
-                        'description': f'Machine learning model confidence: {score}%' if score else 'ML anomaly detected',
-                        'risk': 'AI detected behavioral patterns inconsistent with legitimate transactions'
-                    })
+                        'base': base,
+                        'value': value,
+                        'name': detail.get('name', base),
+                        'severity': severity,
+                        'description': detail.get('description', ''),
+                        'risk': detail.get('risk', '')
+                    }
+                    decoded.append(decoded_info)
                 else:
+                    # Fallback for unknown
                     decoded.append({
                         'indicator': indicator,
                         'base': base,
@@ -416,30 +233,15 @@ class ReportGenerator:
                         'description': 'System detected anomaly',
                         'risk': 'Requires manual investigation'
                     })
+                    severity_counts['UNKNOWN'] += 1
         
-        # Tier explanation
-        tier_info = {
-            1: {
-                'name': 'TIER 1 - ABSOLUTE CERTAINTY',
-                'description': '2+ extreme signals OR 1 extreme signal + high ML confidence (80+%)',
-                'action': 'IMMEDIATE INVESTIGATION REQUIRED - Block card and contact customer'
-            },
-            2: {
-                'name': 'TIER 2 - STRONG EVIDENCE',
-                'description': 'Score-based detection: 75+ risk points from multiple fraud indicators',
-                'action': 'HIGH PRIORITY - Contact customer within 24 hours for verification'
-            },
-            3: {
-                'name': 'TIER 3 - ML-BASED DETECTION',
-                'description': 'High ML confidence (82%+) with 2+ supporting behavioral anomalies',
-                'action': 'INVESTIGATION RECOMMENDED - Review and verify transaction'
-            }
-        }
+        # Get Tier Info from Loader
+        tier_details = self.rules_loader.get_tier(tier)
         
         return {
             'decoded_indicators': decoded,
             'severity_summary': severity_counts,
-            'tier_info': tier_info.get(tier, {'name': 'Unknown Tier', 'description': 'N/A', 'action': 'Review required'}),
+            'tier_info': tier_details,
             'total_indicators': len(decoded)
         }
     
@@ -529,7 +331,7 @@ class ReportGenerator:
                 [Paragraph('<b>Generated:</b>', body_style), 
                  Paragraph(datetime.now().strftime('%B %d, %Y at %H:%M:%S'), body_style)],
                 [Paragraph('<b>Detection Tier:</b>', body_style), 
-                 Paragraph(f"<b>TIER {alert_data['tier']}</b>", body_style)],
+                 Paragraph(f"<b>{indicator_analysis['tier_info']['name']}</b>", body_style)],
                 [Paragraph('<b>Classification:</b>', body_style), 
                  Paragraph(f'<font color="#c41e3a"><b>{fraud_status}</b></font>', body_style)],
             ]
@@ -551,7 +353,9 @@ class ReportGenerator:
             story.append(Spacer(1, 0.1*inch))
             
             risk_score = alert_data['risk_score']
-            risk_level = 'EXTREME' if risk_score >= 90 else 'CRITICAL' if risk_score >= 80 else 'HIGH' if risk_score >= 70 else 'ELEVATED'
+            # Use loader to get risk level text (though we still need colors here)
+            risk_level = self.rules_loader.get_risk_level(risk_score)
+            
             risk_color = colors.HexColor('#8b0000') if risk_score >= 90 else colors.HexColor('#c41e3a') if risk_score >= 80 else colors.HexColor('#e67e22') if risk_score >= 70 else colors.HexColor('#f39c12')
             
             risk_data = [
@@ -709,41 +513,27 @@ class ReportGenerator:
             story.append(Paragraph('INVESTIGATION PROTOCOL', section_header_style))
             story.append(Spacer(1, 0.1*inch))
             
+            # LOAD FROM JSON/LOADER
             story.append(Paragraph('Immediate Actions (0-4 Hours)', subsection_style))
-            immediate_actions = [
-                'Attempt customer contact via all verified phone numbers and email addresses',
-                'Place temporary authorization hold on card if transaction not yet settled',
-                'Review account for additional suspicious transactions in past 72 hours',
-                'Flag account for enhanced monitoring and velocity controls',
-                'Document all attempted customer contact and system actions taken'
-            ]
+            immediate_actions = self.rules_loader.get_immediate_actions()
             for action in immediate_actions:
                 story.append(Paragraph(f'• {action}', bullet_style))
             
             story.append(Spacer(1, 0.15*inch))
             story.append(Paragraph('Short-Term Actions (4-48 Hours)', subsection_style))
-            short_term_actions = [
-                'Conduct comprehensive transaction history analysis for behavioral patterns',
-                'Verify merchant legitimacy and check merchant fraud risk profile',
-                'If customer confirms fraud, initiate Regulation E claim process immediately',
-                'Complete all regulatory compliance documentation requirements',
-                'Escalate to specialized fraud investigation unit if pattern suggests organized crime'
-            ]
+            short_term_actions = self.rules_loader.get_short_term_actions()
             for action in short_term_actions:
                 story.append(Paragraph(f'• {action}', bullet_style))
             
             story.append(Spacer(1, 0.2*inch))
             
-            # Customer verification questions
+            # Customer verification questions (Formatted using loader)
             story.append(Paragraph('Customer Verification Questions', subsection_style))
-            questions = [
-                f'Did you authorize a transaction at <b>{alert_data["merchant"]}</b> for <b>${alert_data["amt"]:.2f}</b>?',
-                f'Have you recently traveled to or been in the vicinity of <b>{alert_data["location"]}</b>?',
-                'Do you currently have physical possession of your payment card?',
-                'Have you shared your card number, CVV, or PIN with anyone recently?',
-                'Have you noticed any other unauthorized transactions on your account?',
-                'Have you received any suspicious calls, emails, or texts requesting card information?'
-            ]
+            questions = self.rules_loader.format_verification_questions(
+                merchant=alert_data["merchant"],
+                amount=alert_data["amt"],
+                location=alert_data["location"]
+            )
             for q in questions:
                 story.append(Paragraph(f'• {q}', bullet_style))
             
@@ -753,15 +543,13 @@ class ReportGenerator:
             story.append(Paragraph('RISK MITIGATION STRATEGY', section_header_style))
             story.append(Spacer(1, 0.1*inch))
             
-            mitigation_data = [
-                ['Category', 'Mitigation Actions'],
-                ['Account Security', 
-                 '• Issue EMV chip card replacement\n• Enable real-time SMS/email transaction alerts\n• Implement step-up authentication for high-risk transactions\n• Update customer contact information if outdated'],
-                ['Transaction Controls', 
-                 '• Set temporary velocity limits (max 3 transactions per hour)\n• Implement geographic transaction restrictions\n• Lower daily authorization limits pending review\n• Enable merchant category blocking for high-risk categories'],
-                ['Monitoring', 
-                 '• Flag account for enhanced monitoring (30-day period)\n• Set alerts for similar fraud indicators or patterns\n• Monitor for account takeover indicators (password changes, contact updates)\n• Cross-reference with other accounts showing similar patterns'],
-            ]
+            # LOAD FROM JSON/LOADER
+            mitigation_info = self.rules_loader.get_risk_mitigation()
+            mitigation_data = [['Category', 'Mitigation Actions']]
+            
+            for category, actions in mitigation_info.items():
+                action_text = "\n".join([f"• {a}" for a in actions])
+                mitigation_data.append([category, action_text])
             
             mitigation_table = Table(mitigation_data, colWidths=[1.5*inch, 4.5*inch])
             mitigation_table.setStyle(TableStyle([
@@ -784,32 +572,10 @@ class ReportGenerator:
             story.append(Paragraph('CASE DISPOSITION GUIDANCE', section_header_style))
             story.append(Spacer(1, 0.1*inch))
             
-            disposition_scenarios = [
-                ('If Fraud Confirmed', [
-                    'Immediately cancel card and issue replacement with new account number',
-                    'Process Regulation E claim per federal guidelines (provisional credit within 10 business days)',
-                    'Update fraud databases and adjust merchant/category risk scores',
-                    'File Suspicious Activity Report (SAR) if loss exceeds $5,000 or shows organized fraud patterns',
-                    'Investigate for related fraudulent activity across customer base',
-                    'Coordinate with law enforcement if criminal referral threshold met'
-                ]),
-                ('If False Positive', [
-                    'Apologize for inconvenience and explain fraud detection process',
-                    'Update customer behavioral profile to reduce future false alerts',
-                    'Document legitimate transaction for machine learning model refinement',
-                    'Consider customer feedback for detection algorithm tuning',
-                    'Offer fraud prevention education and account security best practices'
-                ]),
-                ('If Unable to Reach Customer', [
-                    'Escalate to senior fraud investigation team for enhanced review',
-                    'Continue monitoring for additional suspicious activity patterns',
-                    'Attempt contact through alternative channels (mailed letter, branch visit)',
-                    'Consider temporary card suspension if risk score exceeds critical threshold',
-                    'Document all contact attempts for regulatory compliance'
-                ])
-            ]
+            # LOAD FROM JSON/LOADER
+            disposition_scenarios = self.rules_loader.get_disposition_scenarios()
             
-            for scenario_title, actions in disposition_scenarios:
+            for scenario_title, actions in disposition_scenarios.items():
                 story.append(Paragraph(scenario_title, subsection_style))
                 for action in actions:
                     story.append(Paragraph(f'• {action}', bullet_style))
@@ -984,4 +750,3 @@ def run_report_generator():
         print(f"Unique Patterns Found: {generator.report_count}")
         print(f"Reports Directory: {generator.reports_dir}/")
         print()
-
