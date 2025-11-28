@@ -85,3 +85,4 @@ fraudTest.csv
 *.csv
 clear.py
 injection_log.json
+review_stats.json
