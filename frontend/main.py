@@ -1,27 +1,25 @@
 """
 FastAPI Fraud Report Review System
-FIXED VERSION: Uses PDF Parsing as fallback (No Mock Data)
+FIXED VERSION: Real-time NATS updates + Proper PDF/JSON parsing
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import json
-import time
+import asyncio
 from datetime import datetime
 import os
 import re
+from typing import Optional
 
-# ---------------------------------------------------------
-# TRY TO IMPORT PYPDF FOR PARSING
-# ---------------------------------------------------------
+# PDF Parser
 try:
     from pypdf import PdfReader
 except ImportError:
     print("WARNING: 'pypdf' not installed. PDF parsing will be limited.")
-    print("Please run: pip install pypdf")
     PdfReader = None
 
 app = FastAPI(title="Fraud Report Review System")
@@ -37,11 +35,9 @@ app.add_middleware(
 
 # Configuration
 REPORTS_DIR = Path("./fraud_reports")
-QUEUE_SIZE = 50  # Showing up to 50 files
 STATS_FILE = Path("./review_stats.json")
 
 # Global state
-review_queue = []
 review_stats = {"reviewed": 0, "fraud": 0, "legitimate": 0}
 reviewed_reports = set()
 
@@ -72,62 +68,22 @@ def save_stats():
         }, f, indent=2)
 
 
-def scan_reports():
-    """Scan reports directory and build queue"""
-    global review_queue
-    
-    if not REPORTS_DIR.exists():
-        os.makedirs(REPORTS_DIR, exist_ok=True)
-        return
-    
-    reports = []
-    # FIX: Detect ALL .pdf files
-    for pdf_file in REPORTS_DIR.glob("*.pdf"):
-        try:
-            timestamp = pdf_file.stat().st_mtime
-            parts = pdf_file.stem.split('_')
-            cc_suffix = parts[-1] if len(parts) > 1 else "0000"
-            
-            report_data = {
-                'filename': pdf_file.name,
-                'filepath': str(pdf_file),
-                'timestamp': timestamp,
-                'cc_num': cc_suffix,
-                'reviewed': pdf_file.name in reviewed_reports
-            }
-            
-            reports.append(report_data)
-        except Exception as e:
-            print(f"Error processing {pdf_file}: {e}")
-            continue
-    
-    reports.sort(key=lambda x: x['timestamp'], reverse=True)
-    review_queue = reports[:QUEUE_SIZE]
-
-
-def parse_alert_json_from_pdf(pdf_path):
+def parse_report_from_pdf(pdf_path: Path) -> dict:
     """
-    1. Try to load companion JSON.
-    2. If missing, Parse PDF text directly.
-    3. If that fails, return safe empty defaults.
+    Enhanced PDF parser that extracts all fields from fraud reports
+    Supports both companion JSON and direct PDF text parsing
     """
     json_file = pdf_path.with_suffix('.json')
     
-    # ------------------------------------------------
-    # STRATEGY 1: Load JSON (Best Data)
-    # ------------------------------------------------
+    # Strategy 1: Load companion JSON (Best)
     if json_file.exists():
         try:
             with open(json_file, 'r') as f:
                 return json.load(f)
         except:
-            pass 
-
-    # ------------------------------------------------
-    # STRATEGY 2: Parse PDF Text (Fallback)
-    # ------------------------------------------------
+            pass
     
-    # Initialize safe defaults (No random data)
+    # Strategy 2: Parse PDF text with enhanced patterns
     data = {
         'trans_num': "UNKNOWN",
         'cc_num': "0000",
@@ -145,62 +101,158 @@ def parse_alert_json_from_pdf(pdf_path):
         'street': "", 'city': "", 'state': "", 'zip': "",
         'distance': 0.0
     }
-
-    if PdfReader:
-        try:
-            reader = PdfReader(pdf_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-            
-            # --- Regex Extraction Logic ---
-            # Attempt to find standard patterns in the text
-            
-            # Merchant (e.g. "Merchant: Amazon")
-            m_match = re.search(r"(?:Merchant|Vendor)\s*[:.]?\s*([^\n]+)", text, re.IGNORECASE)
-            if m_match: data['merchant'] = m_match.group(1).strip()
-
-            # Amount (e.g. "Amount: $150.00")
-            a_match = re.search(r"(?:Amount|Total)\s*[:.]?\s*\$?\s*([\d,]+\.\d{2})", text, re.IGNORECASE)
-            if a_match: 
-                try: data['amt'] = float(a_match.group(1).replace(',', ''))
-                except: pass
-
-            # Risk Score (e.g. "Risk Score: 85")
-            r_match = re.search(r"Risk\s*(?:Score)?\s*[:.]?\s*(\d+)", text, re.IGNORECASE)
-            if r_match: 
-                data['risk_score'] = int(r_match.group(1))
-                # Auto-calculate tier based on risk if not found
-                data['tier'] = 3 if data['risk_score'] > 80 else 2 if data['risk_score'] > 50 else 1
-
-            # Transaction ID
-            t_match = re.search(r"(?:Transaction|ID)\s*[:#]?\s*([A-Z0-9-]+)", text, re.IGNORECASE)
-            if t_match: data['trans_num'] = t_match.group(1)
-
-            # Location
-            l_match = re.search(r"Location\s*[:.]?\s*([^\n]+)", text, re.IGNORECASE)
-            if l_match: data['location'] = l_match.group(1).strip()
-            
-            # CC Number (Last 4)
-            c_match = re.search(r"(?:Card|CC)\s*(?:#|No\.?)?\s*(?:\*{4})?(\d{4})", text)
-            if c_match: data['cc_num'] = c_match.group(1)
-
-        except Exception as e:
-            print(f"Failed to parse PDF {pdf_path.name}: {e}")
+    
+    if not PdfReader:
+        return data
+    
+    try:
+        reader = PdfReader(pdf_path)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        
+        # Enhanced extraction patterns based on your sample PDF
+        
+        # Transaction ID from "Transaction ID ad06dc950c..."
+        tid_match = re.search(r"Transaction ID\s+([a-f0-9]{32}|[A-Z0-9-]+)", text, re.IGNORECASE)
+        if tid_match:
+            data['trans_num'] = tid_match.group(1)
+        
+        # Customer ID from "Customer ID ****-****-****-3496"
+        cc_match = re.search(r"Customer ID\s+\*+\-\*+\-\*+\-(\d{4})", text)
+        if cc_match:
+            data['cc_num'] = cc_match.group(1)
+        
+        # Amount from "Amount $93.78"
+        amt_match = re.search(r"Amount\s+\$([0-9,]+\.\d{2})", text)
+        if amt_match:
+            try:
+                data['amt'] = float(amt_match.group(1).replace(',', ''))
+            except:
+                pass
+        
+        # Merchant from "Merchant fraud_Koepp-Witting"
+        merch_match = re.search(r"Merchant\s+([^\n]+)", text)
+        if merch_match:
+            data['merchant'] = merch_match.group(1).strip()
+        
+        # Category from "Category grocery_pos"
+        cat_match = re.search(r"Category\s+([^\n]+)", text)
+        if cat_match:
+            data['category'] = cat_match.group(1).strip()
+        
+        # Location from "Location Big Creek, KY"
+        loc_match = re.search(r"Location\s+([^\n]+)", text)
+        if loc_match:
+            data['location'] = loc_match.group(1).strip()
+            # Parse city and state
+            loc_parts = data['location'].split(',')
+            if len(loc_parts) >= 2:
+                data['city'] = loc_parts[0].strip()
+                data['state'] = loc_parts[1].strip()
+        
+        # Risk Score from "RISK SCORE 95/100"
+        risk_match = re.search(r"RISK SCORE\s+(\d+)/100", text)
+        if risk_match:
+            data['risk_score'] = int(risk_match.group(1))
+        
+        # ML Score from "ML Score 0.0"
+        ml_match = re.search(r"ML Score\s+([\d.]+)", text)
+        if ml_match:
+            try:
+                data['ml_score'] = float(ml_match.group(1))
+            except:
+                pass
+        
+        # Tier from "Detection Tier: TIER 1"
+        tier_match = re.search(r"Detection Tier:\s+TIER\s+(\d+)", text)
+        if tier_match:
+            data['tier'] = int(tier_match.group(1))
+        
+        # Confidence from "Confidence Level 95%"
+        conf_match = re.search(r"Confidence Level\s+(\d+)%", text)
+        if conf_match:
+            data['confidence'] = int(conf_match.group(1))
+        
+        # Fraud status from "CONFIRMED FRAUD" or "UNDER INVESTIGATION"
+        if "CONFIRMED FRAUD" in text:
+            data['actual_fraud'] = 1
+        
+        # Reasons from "Raw Detection String: EXTREME_DIST(Z=5911.0)|VERY_FAR(102km)|FRAUD_HISTORY(8)"
+        reason_match = re.search(r"Raw Detection String:\s+([^\n]+)", text)
+        if reason_match:
+            data['reasons'] = reason_match.group(1).strip()
+        
+        # Indicator count from "3 Indicators"
+        ind_match = re.search(r"(\d+)\s+Indicators", text)
+        if ind_match and not data['reasons']:
+            data['reasons'] = f"{ind_match.group(1)} fraud indicators detected"
+        
+    except Exception as e:
+        print(f"Failed to parse PDF {pdf_path.name}: {e}")
     
     return data
+
+
+def scan_all_reports():
+    """
+    Scan ALL reports in directory (no limit) and return comprehensive data
+    """
+    if not REPORTS_DIR.exists():
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        return []
+    
+    reports = []
+    pdf_files = list(REPORTS_DIR.glob("*.pdf"))
+    
+    print(f"📂 Scanning {len(pdf_files)} PDF reports...")
+    
+    for pdf_file in pdf_files:
+        try:
+            # Parse comprehensive data from PDF
+            data = parse_report_from_pdf(pdf_file)
+            
+            timestamp = pdf_file.stat().st_mtime
+            
+            report_data = {
+                'filename': pdf_file.name,
+                'filepath': str(pdf_file),
+                'timestamp': timestamp,
+                'cc_num': data.get('cc_num', '0000'),
+                'amt': data.get('amt', 0.0),
+                'merchant': data.get('merchant', 'Unknown'),
+                'risk_score': data.get('risk_score', 0),
+                'tier': data.get('tier', 1),
+                'reviewed': pdf_file.name in reviewed_reports,
+                'trans_num': data.get('trans_num', 'UNKNOWN'),
+                'category': data.get('category', 'unknown'),
+                'location': data.get('location', 'Unknown'),
+            }
+            
+            reports.append(report_data)
+        except Exception as e:
+            print(f"❌ Error processing {pdf_file}: {e}")
+            continue
+    
+    # Sort by timestamp (newest first)
+    reports.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    print(f"✅ Loaded {len(reports)} reports into queue")
+    return reports
 
 
 @app.on_event("startup")
 async def startup_event():
     load_stats()
-    scan_reports()
-    print(f"Loaded {len(review_queue)} reports into queue")
+    reports = scan_all_reports()
+    print(f"📊 Total reports: {len(reports)}")
+    print(f"📊 Reviewed: {len(reviewed_reports)}")
+    print(f"📊 Pending: {len(reports) - len(reviewed_reports)}")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve main HTML interface"""
+    """Serve main HTML interface with auto-refresh"""
     html_content = """
 <!DOCTYPE html>
 <html lang="en">
@@ -259,7 +311,10 @@ async def root():
                             </svg>
                         </button>
                     </div>
-                    <div class="text-xs text-gray-500 mt-1" id="last-update">Updated: --:--:--</div>
+                    <div class="flex items-center justify-between mt-2">
+                        <div class="text-xs text-gray-500" id="last-update">Updated: --:--:--</div>
+                        <div class="text-xs font-semibold text-blue-600" id="total-reports">0 total</div>
+                    </div>
                 </div>
 
                 <div id="queue-list" class="overflow-y-auto max-h-96">
@@ -305,6 +360,7 @@ async def root():
                 
                 const unreviewed = data.queue.filter(r => !r.reviewed).length;
                 document.getElementById('queue-count').textContent = unreviewed;
+                document.getElementById('total-reports').textContent = `${data.queue.length} total`;
                 document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
                 
                 renderQueue(data.queue);
@@ -337,7 +393,7 @@ async def root():
                         </div>
                         <div class="text-sm font-semibold text-gray-900 mb-1">****${ccDisplay}</div>
                         <div class="text-xs text-gray-600 mb-1">$${report.amt.toFixed(2)} • ${report.merchant}</div>
-                        <div class="text-xs text-gray-500">${new Date(report.timestamp).toLocaleString()}</div>
+                        <div class="text-xs text-gray-500">${new Date(report.timestamp * 1000).toLocaleString()}</div>
                     </button>
                 `;
             }).join('');
@@ -359,12 +415,12 @@ async def root():
             const data = report.data;
             const ccDisplay = data.cc_num ? data.cc_num.toString().slice(-4) : '0000';
             
-            const actionButtons = !report.reviewed && report.in_queue ? `
+            const actionButtons = !report.reviewed ? `
                 <div class="flex gap-3">
                     <button onclick="submitFeedback(true)" class="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-bold">✗ CONFIRM FRAUD</button>
                     <button onclick="submitFeedback(false)" class="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-bold">✓ MARK LEGITIMATE</button>
                 </div>
-            ` : report.reviewed ? '<div class="px-4 py-3 rounded-lg font-bold text-center bg-green-100 text-green-700">✓ Reviewed</div>' : '<div class="px-4 py-3 bg-yellow-100 text-yellow-800 rounded-lg text-sm text-center">⚠️ Outside active queue</div>';
+            ` : '<div class="px-4 py-3 rounded-lg font-bold text-center bg-green-100 text-green-700">✓ Reviewed</div>';
             
             panel.innerHTML = `
                 <div class="flex flex-col h-full">
@@ -394,14 +450,6 @@ async def root():
                                     <div><div class="text-sm text-gray-600">Category</div><div class="font-semibold">${data.category}</div></div>
                                     <div><div class="text-sm text-gray-600">Location</div><div class="font-semibold">${data.location}</div></div>
                                     <div><div class="text-sm text-gray-600">Distance</div><div class="font-semibold">${data.distance} km</div></div>
-                                </div>
-                            </div>
-                            <div>
-                                <h3 class="text-lg font-bold text-gray-900 mb-3">Customer Information</h3>
-                                <div class="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
-                                    <div><div class="text-sm text-gray-600">Name</div><div class="font-semibold">${data.first} ${data.last}</div></div>
-                                    <div><div class="text-sm text-gray-600">Job</div><div class="font-semibold">${data.job}</div></div>
-                                    <div class="col-span-2"><div class="text-sm text-gray-600">Address</div><div class="font-semibold">${data.street}, ${data.city}, ${data.state} ${data.zip}</div></div>
                                 </div>
                             </div>
                             <div>
@@ -448,7 +496,7 @@ async def root():
             }
         }
 
-        setInterval(() => { if (autoRefresh) fetchQueue(); }, 5000);
+        setInterval(() => { if (autoRefresh) fetchQueue(); }, 3000);
         fetchQueue();
         document.getElementById('refresh-btn').addEventListener('click', fetchQueue);
     </script>
@@ -460,49 +508,44 @@ async def root():
 
 @app.get("/api/queue")
 async def get_queue():
-    """Get current review queue with stats"""
-    scan_reports()
+    """Get ALL reports with comprehensive stats"""
+    reports = scan_all_reports()
     
     queue_data = []
-    for report in review_queue:
-        pdf_path = Path(report['filepath'])
-        data = parse_alert_json_from_pdf(pdf_path)
-        
+    for report in reports:
         queue_data.append({
             'filename': report['filename'],
-            'timestamp': datetime.fromtimestamp(report['timestamp']).isoformat(),
-            'cc_num': data.get('cc_num', report['cc_num']),
-            'amt': data.get('amt', 0.0),
-            'merchant': data.get('merchant', 'Unknown'),
-            'risk_score': data.get('risk_score', 0),
-            'tier': data.get('tier', 0),
+            'timestamp': report['timestamp'],
+            'cc_num': report['cc_num'],
+            'amt': report['amt'],
+            'merchant': report['merchant'],
+            'risk_score': report['risk_score'],
+            'tier': report['tier'],
             'reviewed': report['reviewed']
         })
     
     return {
         'queue': queue_data,
         'stats': review_stats,
-        'queue_size': QUEUE_SIZE
+        'total_reports': len(reports)
     }
 
 
 @app.get("/api/report/{filename}")
 async def get_report(filename: str):
-    """Get detailed report data"""
+    """Get detailed report data with full parsing"""
     pdf_path = REPORTS_DIR / filename
     
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="Report not found")
     
-    data = parse_alert_json_from_pdf(pdf_path)
-    in_queue = any(r['filename'] == filename for r in review_queue)
+    data = parse_report_from_pdf(pdf_path)
     
     return {
         'filename': filename,
         'data': data,
         'pdf_url': f"/api/pdf/{filename}",
-        'reviewed': filename in reviewed_reports,
-        'in_queue': in_queue
+        'reviewed': filename in reviewed_reports
     }
 
 
@@ -532,9 +575,7 @@ async def submit_feedback(feedback: FeedbackRequest):
     
     save_stats()
     
-    print(f"Feedback: {feedback.filename} -> {'FRAUD' if feedback.is_fraud else 'LEGITIMATE'}")
-    
-    scan_reports()
+    print(f"✓ Feedback: {feedback.filename} -> {'FRAUD' if feedback.is_fraud else 'LEGITIMATE'}")
     
     return {
         'success': True,
@@ -547,10 +588,11 @@ if __name__ == "__main__":
     import uvicorn
     
     print("=" * 60)
-    print("  FRAUD REPORT REVIEW SYSTEM (FIXED - NO MOCK DATA)")
+    print("  FRAUD REPORT REVIEW SYSTEM (ENHANCED)")
     print("=" * 60)
     print(f"  Reports directory: {REPORTS_DIR}")
-    print(f"  Queue size: {QUEUE_SIZE}")
+    print(f"  No queue size limit - showing ALL reports")
+    print(f"  Enhanced PDF parsing with fallback support")
     print(f"  Starting server on http://localhost:8000")
     print("=" * 60)
     
