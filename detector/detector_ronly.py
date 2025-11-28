@@ -1,6 +1,6 @@
 """
 Inference-only fraud detector with FULL transaction data in alerts.
-Compatible with the report generator.
+Compatible with the report generator. Uses Redis for stats.
 """
 
 import pathway as pw
@@ -8,9 +8,9 @@ import math, json, time
 from datetime import datetime
 from pathlib import Path
 
-# shared modules (assumed present and correct)
+# shared modules - REDIS VERSION
 from shared import model_store
-from shared import stats_store
+from shared import redis_stats_store
 
 # ───────────────────────────────────────────────
 # LOCAL SCHEMA WITHOUT is_fraud
@@ -60,6 +60,9 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
 
 # Debug counter
 debug_counter = {"total": 0, "alerts": 0}
+
+# Global Redis store - CHANGED FROM stats_store
+redis_store = redis_stats_store.get_store()
 
 
 # ───────────────────────────────────────────────
@@ -120,7 +123,7 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
 
 
 # ───────────────────────────────────────────────
-# INFERENCE UDF WITH FULL TRANSACTION DATA
+# INFERENCE UDF WITH FULL TRANSACTION DATA + REDIS
 # ───────────────────────────────────────────────
 @pw.udf
 def run_infer_with_full_data(
@@ -132,7 +135,7 @@ def run_infer_with_full_data(
 ):
     """
     Inference UDF that returns FULL transaction data in alerts.
-    This matches the format expected by the report generator.
+    Uses REDIS for stats lookups (not files).
     """
     
     debug_counter["total"] += 1
@@ -161,10 +164,10 @@ def run_infer_with_full_data(
     except:
         distance = 0.0
 
-    # Read aggregated stats
-    cust = stats_store.get_customer_profile(cc_num)
-    merch_stats = stats_store.get_merchant_profile(merchant)
-    cat = stats_store.get_category_profile(category)
+    # Read aggregated stats from REDIS - CHANGED!
+    cust = redis_store.get_customer_profile(cc_num)
+    merch_stats = redis_store.get_merchant_profile(merchant)
+    cat = redis_store.get_category_profile(category)
 
     # Build feature vector
     z_amt = ((float(amt) - cust["avg_amt"]) / cust["std_amt"]) if cust["std_amt"] > 0 else 0.0
@@ -367,13 +370,27 @@ def extract_is_alert(alert_json: str) -> bool:
 # ───────────────────────────────────────────────
 def run_detector():
     print("═══════════════════════════════════════════")
-    print("   FRAUD DETECTOR — INFERENCE MODE")
+    print("   FRAUD DETECTOR — INFERENCE MODE (Redis)")
     print("   (Report Generator Compatible)")
     print("═══════════════════════════════════════════")
     print("Input:", INPUT_TOPIC)
     print("Alerts (full data):", ALERTS_TOPIC)
     print("Results (debug):", RESULTS_TOPIC)
     print("Model file:", str(Path('./pathway_persistence') / "ml_models.pkl"))
+    print(f"Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
+    print()
+    
+    # Check Redis connection
+    if redis_store.health_check():
+        summary = redis_store.get_stats_summary()
+        print(f"✓ Redis connected")
+        print(f"   Customers: {summary['customers']:,}")
+        print(f"   Merchants: {summary['merchants']:,}")
+        print(f"   Categories: {summary['categories']:,}")
+    else:
+        print("❌ Redis not available!")
+        return
+    
     print("───────────────────────────────────────────")
 
     tx = pw.io.nats.read(
@@ -427,6 +444,7 @@ def run_detector():
 
     print("\n✓ Detector active - publishing full transaction data in alerts")
     print("✓ Report generator will receive complete information")
+    print("✓ Reading stats from Redis (fast, concurrent-safe)")
     print()
 
     # Run with checkpoint config
