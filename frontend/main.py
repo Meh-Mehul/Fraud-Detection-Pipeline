@@ -1,19 +1,17 @@
 """
 FastAPI Fraud Report Review System
-FIXED VERSION: Real-time NATS updates + Proper PDF/JSON parsing
+Enhanced Version: Diverse queue of 10 reports + improved UI
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import json
-import asyncio
 from datetime import datetime
-import os
 import re
-from typing import Optional
+from typing import Optional, List, Set
 
 # PDF Parser
 try:
@@ -36,10 +34,14 @@ app.add_middleware(
 # Configuration
 REPORTS_DIR = Path("./fraud_reports")
 STATS_FILE = Path("./review_stats.json")
+QUEUE_FILE = Path("./frontend_queue.json")
+MAX_QUEUE_SIZE = 10
 
 # Global state
 review_stats = {"reviewed": 0, "fraud": 0, "legitimate": 0}
 reviewed_reports = set()
+frontend_queue = []  # List of 10 diverse reports
+all_reports_cache = []  # All reports for background training
 
 
 class FeedbackRequest(BaseModel):
@@ -68,11 +70,32 @@ def save_stats():
         }, f, indent=2)
 
 
+def load_queue():
+    """Load frontend queue from file"""
+    global frontend_queue
+    if QUEUE_FILE.exists():
+        with open(QUEUE_FILE, 'r') as f:
+            frontend_queue = json.load(f)
+
+
+def save_queue():
+    """Save frontend queue to file"""
+    with open(QUEUE_FILE, 'w') as f:
+        json.dump(frontend_queue, f, indent=2)
+
+
+def get_indicator_signature(reasons: str) -> str:
+    """Extract unique pattern signature from reasons string"""
+    if not reasons:
+        return "UNKNOWN"
+    parts = reasons.split('|')
+    # Extract just the base indicator codes
+    bases = sorted([p.split('(')[0] for p in parts])
+    return "|".join(bases)
+
+
 def parse_report_from_pdf(pdf_path: Path) -> dict:
-    """
-    Enhanced PDF parser that extracts all fields from fraud reports
-    Supports both companion JSON and direct PDF text parsing
-    """
+    """Enhanced PDF parser that extracts all fields from fraud reports"""
     json_file = pdf_path.with_suffix('.json')
     
     # Strategy 1: Load companion JSON (Best)
@@ -83,7 +106,7 @@ def parse_report_from_pdf(pdf_path: Path) -> dict:
         except:
             pass
     
-    # Strategy 2: Parse PDF text with enhanced patterns
+    # Strategy 2: Parse PDF text
     data = {
         'trans_num': "UNKNOWN",
         'cc_num': "0000",
@@ -95,11 +118,9 @@ def parse_report_from_pdf(pdf_path: Path) -> dict:
         'tier': 1,
         'reasons': "Data extracted from PDF",
         'confidence': 0,
-        'ml_score': 0,
         'actual_fraud': 0,
         'first': "", 'last': "", 'job': "",
         'street': "", 'city': "", 'state': "", 'zip': "",
-        'distance': 0.0
     }
     
     if not PdfReader:
@@ -111,19 +132,15 @@ def parse_report_from_pdf(pdf_path: Path) -> dict:
         for page in reader.pages:
             text += page.extract_text() + "\n"
         
-        # Enhanced extraction patterns based on your sample PDF
-        
-        # Transaction ID from "Transaction ID ad06dc950c..."
+        # Extract fields using regex patterns
         tid_match = re.search(r"Transaction ID\s+([a-f0-9]{32}|[A-Z0-9-]+)", text, re.IGNORECASE)
         if tid_match:
             data['trans_num'] = tid_match.group(1)
         
-        # Customer ID from "Customer ID ****-****-****-3496"
         cc_match = re.search(r"Customer ID\s+\*+\-\*+\-\*+\-(\d{4})", text)
         if cc_match:
             data['cc_num'] = cc_match.group(1)
         
-        # Amount from "Amount $93.78"
         amt_match = re.search(r"Amount\s+\$([0-9,]+\.\d{2})", text)
         if amt_match:
             try:
@@ -131,62 +148,40 @@ def parse_report_from_pdf(pdf_path: Path) -> dict:
             except:
                 pass
         
-        # Merchant from "Merchant fraud_Koepp-Witting"
         merch_match = re.search(r"Merchant\s+([^\n]+)", text)
         if merch_match:
             data['merchant'] = merch_match.group(1).strip()
         
-        # Category from "Category grocery_pos"
         cat_match = re.search(r"Category\s+([^\n]+)", text)
         if cat_match:
             data['category'] = cat_match.group(1).strip()
         
-        # Location from "Location Big Creek, KY"
         loc_match = re.search(r"Location\s+([^\n]+)", text)
         if loc_match:
             data['location'] = loc_match.group(1).strip()
-            # Parse city and state
             loc_parts = data['location'].split(',')
             if len(loc_parts) >= 2:
                 data['city'] = loc_parts[0].strip()
                 data['state'] = loc_parts[1].strip()
         
-        # Risk Score from "RISK SCORE 95/100"
         risk_match = re.search(r"RISK SCORE\s+(\d+)/100", text)
         if risk_match:
             data['risk_score'] = int(risk_match.group(1))
         
-        # ML Score from "ML Score 0.0"
-        ml_match = re.search(r"ML Score\s+([\d.]+)", text)
-        if ml_match:
-            try:
-                data['ml_score'] = float(ml_match.group(1))
-            except:
-                pass
-        
-        # Tier from "Detection Tier: TIER 1"
         tier_match = re.search(r"Detection Tier:\s+TIER\s+(\d+)", text)
         if tier_match:
             data['tier'] = int(tier_match.group(1))
         
-        # Confidence from "Confidence Level 95%"
         conf_match = re.search(r"Confidence Level\s+(\d+)%", text)
         if conf_match:
             data['confidence'] = int(conf_match.group(1))
         
-        # Fraud status from "CONFIRMED FRAUD" or "UNDER INVESTIGATION"
         if "CONFIRMED FRAUD" in text:
             data['actual_fraud'] = 1
         
-        # Reasons from "Raw Detection String: EXTREME_DIST(Z=5911.0)|VERY_FAR(102km)|FRAUD_HISTORY(8)"
         reason_match = re.search(r"Raw Detection String:\s+([^\n]+)", text)
         if reason_match:
             data['reasons'] = reason_match.group(1).strip()
-        
-        # Indicator count from "3 Indicators"
-        ind_match = re.search(r"(\d+)\s+Indicators", text)
-        if ind_match and not data['reasons']:
-            data['reasons'] = f"{ind_match.group(1)} fraud indicators detected"
         
     except Exception as e:
         print(f"Failed to parse PDF {pdf_path.name}: {e}")
@@ -194,12 +189,52 @@ def parse_report_from_pdf(pdf_path: Path) -> dict:
     return data
 
 
+def build_diverse_queue(all_reports: List[dict]) -> List[dict]:
+    """
+    Build a diverse queue of up to 10 reports with unique indicator patterns
+    Prioritize unreviewed reports with different fraud patterns
+    """
+    seen_patterns: Set[str] = set()
+    diverse_queue = []
+    
+    # Sort: unreviewed first, then by risk score (descending), then by timestamp
+    sorted_reports = sorted(
+        all_reports,
+        key=lambda x: (
+            x['reviewed'],  # False (unreviewed) comes before True
+            -x['risk_score'],  # Higher risk first
+            -x['timestamp']  # Newer first
+        )
+    )
+    
+    for report in sorted_reports:
+        if len(diverse_queue) >= MAX_QUEUE_SIZE:
+            break
+        
+        pattern = get_indicator_signature(report.get('reasons', ''))
+        
+        # Add report if pattern is new or if we haven't filled the queue yet
+        if pattern not in seen_patterns:
+            diverse_queue.append(report)
+            seen_patterns.add(pattern)
+    
+    # If we still have space and haven't reached 10, add more reports
+    if len(diverse_queue) < MAX_QUEUE_SIZE:
+        for report in sorted_reports:
+            if len(diverse_queue) >= MAX_QUEUE_SIZE:
+                break
+            if report not in diverse_queue:
+                diverse_queue.append(report)
+    
+    return diverse_queue
+
+
 def scan_all_reports():
-    """
-    Scan ALL reports in directory (no limit) and return comprehensive data
-    """
+    """Scan ALL reports and update both cache and queue"""
+    global all_reports_cache, frontend_queue
+    
     if not REPORTS_DIR.exists():
-        os.makedirs(REPORTS_DIR, exist_ok=True)
+        REPORTS_DIR.mkdir(exist_ok=True)
         return []
     
     reports = []
@@ -209,9 +244,7 @@ def scan_all_reports():
     
     for pdf_file in pdf_files:
         try:
-            # Parse comprehensive data from PDF
             data = parse_report_from_pdf(pdf_file)
-            
             timestamp = pdf_file.stat().st_mtime
             
             report_data = {
@@ -227,6 +260,7 @@ def scan_all_reports():
                 'trans_num': data.get('trans_num', 'UNKNOWN'),
                 'category': data.get('category', 'unknown'),
                 'location': data.get('location', 'Unknown'),
+                'reasons': data.get('reasons', ''),
             }
             
             reports.append(report_data)
@@ -234,25 +268,31 @@ def scan_all_reports():
             print(f"❌ Error processing {pdf_file}: {e}")
             continue
     
-    # Sort by timestamp (newest first)
-    reports.sort(key=lambda x: x['timestamp'], reverse=True)
+    # Update cache with all reports
+    all_reports_cache = reports
     
-    print(f"✅ Loaded {len(reports)} reports into queue")
+    # Build diverse queue for frontend
+    frontend_queue = build_diverse_queue(reports)
+    save_queue()
+    
+    print(f"✅ Total reports: {len(reports)}")
+    print(f"✅ Diverse queue: {len(frontend_queue)} reports")
+    
     return reports
 
 
 @app.on_event("startup")
 async def startup_event():
     load_stats()
-    reports = scan_all_reports()
-    print(f"📊 Total reports: {len(reports)}")
+    scan_all_reports()
+    print(f"📊 Total reports: {len(all_reports_cache)}")
+    print(f"📊 Frontend queue: {len(frontend_queue)}")
     print(f"📊 Reviewed: {len(reviewed_reports)}")
-    print(f"📊 Pending: {len(reports) - len(reviewed_reports)}")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve main HTML interface with auto-refresh"""
+    """Serve main HTML interface - UPDATED UI"""
     html_content = """
 <!DOCTYPE html>
 <html lang="en">
@@ -272,7 +312,7 @@ async def root():
                     </svg>
                     <div>
                         <h1 class="text-2xl font-bold">Fraud Investigation Center</h1>
-                        <p class="text-gray-300 text-sm">Real-time Report Review System</p>
+                        <p class="text-gray-300 text-sm">Diverse Case Review System</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-6">
@@ -302,7 +342,7 @@ async def root():
                             <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
-                            <h2 class="font-bold text-gray-900">Review Queue</h2>
+                            <h2 class="font-bold text-gray-900">Diverse Review Queue</h2>
                             <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold" id="queue-count">0</span>
                         </div>
                         <button id="refresh-btn" class="p-2 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 transition-colors">
@@ -311,9 +351,8 @@ async def root():
                             </svg>
                         </button>
                     </div>
-                    <div class="flex items-center justify-between mt-2">
-                        <div class="text-xs text-gray-500" id="last-update">Updated: --:--:--</div>
-                        <div class="text-xs font-semibold text-blue-600" id="total-reports">0 total</div>
+                    <div class="mt-2 text-xs text-gray-500">
+                        Showing 10 diverse fraud patterns • <span id="last-update">Updated: --:--:--</span>
                     </div>
                 </div>
 
@@ -327,7 +366,7 @@ async def root():
             <div id="details-panel" class="lg:col-span-2 bg-white rounded-lg shadow-md border border-gray-200">
                 <div class="flex flex-col items-center justify-center h-96 text-gray-500">
                     <p class="text-lg font-semibold">Select a report to review</p>
-                    <p class="text-sm">Choose a report from the queue to begin investigation</p>
+                    <p class="text-sm">Choose from 10 diverse fraud patterns</p>
                 </div>
             </div>
         </div>
@@ -360,7 +399,6 @@ async def root():
                 
                 const unreviewed = data.queue.filter(r => !r.reviewed).length;
                 document.getElementById('queue-count').textContent = unreviewed;
-                document.getElementById('total-reports').textContent = `${data.queue.length} total`;
                 document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
                 
                 renderQueue(data.queue);
@@ -422,6 +460,38 @@ async def root():
                 </div>
             ` : '<div class="px-4 py-3 rounded-lg font-bold text-center bg-green-100 text-green-700">✓ Reviewed</div>';
             
+            // Parse fraud indicators
+            const indicators = data.reasons ? data.reasons.split('|') : [];
+            const indicatorsList = indicators.map(ind => {
+                const parts = ind.split('(');
+                const base = parts[0];
+                const value = parts.length > 1 ? parts[1].replace(')', '') : '';
+                
+                // Decode indicators into readable descriptions
+                const descriptions = {
+                    'EXTREME_DIST': 'Extreme distance from home location',
+                    'VERY_FAR': 'Transaction very far from usual locations',
+                    'FRAUD_HISTORY': 'Account has history of fraudulent activity',
+                    'HIGH_MERCH_RISK': 'High-risk merchant location',
+                    'HIGH_CAT_RISK': 'High-risk transaction category',
+                    'LATE_NIGHT': 'Transaction during unusual hours (1-5 AM)',
+                    'HUGE_AMT': 'Transaction amount significantly above average',
+                    'EXTREME_AMT': 'Extreme transaction amount detected',
+                    'ONLINE': 'Online transaction with elevated risk',
+                    'ML_HIGH': 'Machine learning model detected high fraud probability',
+                    'ML_MODERATE': 'Machine learning model detected moderate risk'
+                };
+                
+                const desc = descriptions[base] || base;
+                return `<div class="flex items-start gap-2 p-2 bg-red-50 rounded border-l-4 border-red-500">
+                    <span class="text-red-600 font-bold text-lg">•</span>
+                    <div class="flex-1">
+                        <div class="font-semibold text-gray-900">${desc}</div>
+                        ${value ? `<div class="text-xs text-gray-600 mt-1">Value: ${value}</div>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
+            
             panel.innerHTML = `
                 <div class="flex flex-col h-full">
                     <div class="p-6 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
@@ -445,18 +515,16 @@ async def root():
                                 <h3 class="text-lg font-bold text-gray-900 mb-3">Transaction Details</h3>
                                 <div class="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
                                     <div><div class="text-sm text-gray-600">Amount</div><div class="text-xl font-bold">$${data.amt.toFixed(2)}</div></div>
-                                    <div><div class="text-sm text-gray-600">ML Score</div><div class="text-xl font-bold">${data.ml_score}</div></div>
+                                    <div><div class="text-sm text-gray-600">Confidence</div><div class="text-xl font-bold">${data.confidence}%</div></div>
                                     <div><div class="text-sm text-gray-600">Merchant</div><div class="font-semibold">${data.merchant}</div></div>
                                     <div><div class="text-sm text-gray-600">Category</div><div class="font-semibold">${data.category}</div></div>
-                                    <div><div class="text-sm text-gray-600">Location</div><div class="font-semibold">${data.location}</div></div>
-                                    <div><div class="text-sm text-gray-600">Distance</div><div class="font-semibold">${data.distance} km</div></div>
+                                    <div class="col-span-2"><div class="text-sm text-gray-600">Location</div><div class="font-semibold">${data.location}</div></div>
                                 </div>
                             </div>
                             <div>
-                                <h3 class="text-lg font-bold text-gray-900 mb-3">Fraud Indicators</h3>
-                                <div class="bg-red-50 border border-red-200 p-4 rounded-lg">
-                                    <div class="text-sm font-mono text-gray-700 break-all">${data.reasons}</div>
-                                    <div class="mt-3 text-sm text-gray-600"><strong>Confidence:</strong> ${data.confidence}%</div>
+                                <h3 class="text-lg font-bold text-gray-900 mb-3">Fraud Indicators (${indicators.length})</h3>
+                                <div class="space-y-2">
+                                    ${indicatorsList || '<p class="text-gray-500">No specific indicators detected</p>'}
                                 </div>
                             </div>
                         </div>
@@ -496,7 +564,7 @@ async def root():
             }
         }
 
-        setInterval(() => { if (autoRefresh) fetchQueue(); }, 3000);
+        setInterval(() => { if (autoRefresh) fetchQueue(); }, 5000);
         fetchQueue();
         document.getElementById('refresh-btn').addEventListener('click', fetchQueue);
     </script>
@@ -508,32 +576,17 @@ async def root():
 
 @app.get("/api/queue")
 async def get_queue():
-    """Get ALL reports with comprehensive stats"""
-    reports = scan_all_reports()
-    
-    queue_data = []
-    for report in reports:
-        queue_data.append({
-            'filename': report['filename'],
-            'timestamp': report['timestamp'],
-            'cc_num': report['cc_num'],
-            'amt': report['amt'],
-            'merchant': report['merchant'],
-            'risk_score': report['risk_score'],
-            'tier': report['tier'],
-            'reviewed': report['reviewed']
-        })
-    
+    """Get diverse queue of 10 reports"""
     return {
-        'queue': queue_data,
+        'queue': frontend_queue,
         'stats': review_stats,
-        'total_reports': len(reports)
+        'total_reports': len(all_reports_cache)
     }
 
 
 @app.get("/api/report/{filename}")
 async def get_report(filename: str):
-    """Get detailed report data with full parsing"""
+    """Get detailed report data"""
     pdf_path = REPORTS_DIR / filename
     
     if not pdf_path.exists():
@@ -562,7 +615,7 @@ async def get_pdf(filename: str):
 
 @app.post("/api/feedback")
 async def submit_feedback(feedback: FeedbackRequest):
-    """Submit fraud/legitimate feedback"""
+    """Submit feedback and update queue"""
     global review_stats, reviewed_reports
     
     reviewed_reports.add(feedback.filename)
@@ -575,7 +628,11 @@ async def submit_feedback(feedback: FeedbackRequest):
     
     save_stats()
     
+    # Rebuild queue with diverse reports
+    scan_all_reports()
+    
     print(f"✓ Feedback: {feedback.filename} -> {'FRAUD' if feedback.is_fraud else 'LEGITIMATE'}")
+    print(f"  Queue rebuilt: {len(frontend_queue)} diverse reports")
     
     return {
         'success': True,
@@ -588,11 +645,11 @@ if __name__ == "__main__":
     import uvicorn
     
     print("=" * 60)
-    print("  FRAUD REPORT REVIEW SYSTEM (ENHANCED)")
+    print("  FRAUD REPORT REVIEW SYSTEM (DIVERSE QUEUE)")
     print("=" * 60)
     print(f"  Reports directory: {REPORTS_DIR}")
-    print(f"  No queue size limit - showing ALL reports")
-    print(f"  Enhanced PDF parsing with fallback support")
+    print(f"  Queue size: {MAX_QUEUE_SIZE} diverse reports")
+    print(f"  All other reports continue training in background")
     print(f"  Starting server on http://localhost:8000")
     print("=" * 60)
     
