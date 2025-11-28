@@ -287,5 +287,175 @@
   "ml_thresholds": {
     "high_confidence": 80,
     "medium_confidence": 60
+  },
+  "detector_rules": {
+    "tier1_rules": {
+      "description": "Critical signals requiring immediate action",
+      "extreme_signals": {
+        "amount_checks": [
+          {
+            "code": "MASSIVE_AMT",
+            "condition": "z_amt > 4.5",
+            "format": "MASSIVE_AMT(Z={z_amt:.1f})"
+          },
+          {
+            "code": "HUGE_AMT",
+            "condition": "z_amt > 3.8 and amt > 500",
+            "format": "HUGE_AMT(Z={z_amt:.1f},${amt:.0f})"
+          }
+        ],
+        "distance_checks": [
+          {
+            "code": "EXTREME_DIST",
+            "condition": "z_dist > 4",
+            "format": "EXTREME_DIST(Z={z_dist:.1f})"
+          },
+          {
+            "code": "VERY_FAR",
+            "condition": "z_dist > 3.2 and distance > 100",
+            "format": "VERY_FAR({distance:.0f}km)"
+          }
+        ],
+        "merchant_checks": [
+          {
+            "code": "FRAUD_MERCHANT",
+            "condition": "fraud_rate > 0.4 and total > 50",
+            "format": "FRAUD_MERCHANT({fraud_rate*100:.0f}%)"
+          }
+        ],
+        "history_checks": [
+          {
+            "code": "FRAUD_HISTORY",
+            "condition": "fraud_history >= 3",
+            "format": "FRAUD_HISTORY({fraud_history})"
+          }
+        ]
+      },
+      "trigger_conditions": [
+        {
+          "name": "multiple_extreme",
+          "condition": "extreme_signals >= 2",
+          "confidence": 95,
+          "tier": 1
+        },
+        {
+          "name": "extreme_plus_ml",
+          "condition": "extreme_signals >= 1 and ml_score >= 80",
+          "confidence": 90,
+          "tier": 1
+        }
+      ]
+    },
+    "tier2_rules": {
+      "description": "Score-based detection with 75+ point threshold",
+      "scoring_rules": [
+        {
+          "name": "VeryHighAmt",
+          "condition": "z_amt > 3.5",
+          "points": 40,
+          "format": "VeryHighAmt(Z={z_amt:.1f})"
+        },
+        {
+          "name": "HighAmt",
+          "condition": "z_amt > 3",
+          "points": 30,
+          "format": "HighAmt(Z={z_amt:.1f})"
+        },
+        {
+          "name": "VeryFar",
+          "condition": "z_dist > 3.5",
+          "points": 35,
+          "format": "VeryFar(Z={z_dist:.1f})"
+        },
+        {
+          "name": "Far",
+          "condition": "z_dist > 3",
+          "points": 25,
+          "format": "Far(Z={z_dist:.1f})"
+        },
+        {
+          "name": "RiskyMerch",
+          "condition": "fraud_rate > 0.3 and total > 40",
+          "points": 35,
+          "format": "RiskyMerch({fraud_rate*100:.0f}%)"
+        },
+        {
+          "name": "LateOnline",
+          "condition": "is_online and is_late and amt > 400",
+          "points": 25,
+          "format": "LateOnline"
+        },
+        {
+          "name": "PrevFraud",
+          "condition": "fraud_history >= 2",
+          "points": 30,
+          "format": "PrevFraud({fraud_history})"
+        },
+        {
+          "name": "Amt+Dist",
+          "condition": "z_amt > 2.5 and z_dist > 2.5",
+          "points": 25,
+          "format": "Amt+Dist"
+        },
+        {
+          "name": "ML_high",
+          "condition": "ml_score >= 80",
+          "points": 25,
+          "format": "ML{ml_score:.0f}"
+        },
+        {
+          "name": "ML_medium",
+          "condition": "ml_score >= 70",
+          "points": 15,
+          "format": "ML{ml_score:.0f}"
+        }
+      ],
+      "threshold": 75,
+      "confidence": 80,
+      "tier": 2
+    },
+    "tier3_rules": {
+      "description": "ML-based detection with supporting signals",
+      "ml_threshold": 82,
+      "support_indicators": [
+        {
+          "name": "amount_anomaly",
+          "condition": "z_amt > 2"
+        },
+        {
+          "name": "distance_anomaly",
+          "condition": "z_dist > 2"
+        },
+        {
+          "name": "merchant_risk",
+          "condition": "merchant_fraud_rate > 0.15"
+        },
+        {
+          "name": "category_risk",
+          "condition": "category_fraud_rate > 0.1"
+        },
+        {
+          "name": "fraud_history",
+          "condition": "fraud_history >= 1"
+        }
+      ],
+      "min_support_count": 2,
+      "confidence": 75,
+      "tier": 3,
+      "reason_formats": {
+        "ml_primary": "ML{ml_score:.0f}",
+        "high_amount": "HighAmt",
+        "far_location": "FarLoc"
+      }
+    },
+    "online_categories": [
+      "shopping_net",
+      "misc_net",
+      "grocery_net"
+    ],
+    "late_night_hours": {
+      "start": 1,
+      "end": 5
+    }
   }
 }

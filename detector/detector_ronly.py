@@ -1,16 +1,25 @@
 """
-Inference-only fraud detector with FULL transaction data in alerts.
+Inference-only fraud detector using SHARED RULES from JSON.
 Compatible with the report generator. Uses Redis for stats.
 """
 
 import pathway as pw
-import math, json, time
+import math, json, time, sys
 from datetime import datetime
 from pathlib import Path
 
-# shared modules - REDIS VERSION
+# Add shared path
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent
+shared_path = project_root / "shared"
+
+if str(shared_path) not in sys.path:
+    sys.path.append(str(shared_path))
+
+# shared modules - REDIS VERSION + RULES LOADER
 from shared import model_store
 from shared import redis_stats_store
+from shared.rules_loader import get_rules_loader
 
 # ───────────────────────────────────────────────
 # LOCAL SCHEMA WITHOUT is_fraud
@@ -25,7 +34,7 @@ class TransactionSchema(pw.Schema):
 
     first: str = pw.column_definition(dtype=str)
     last: str = pw.column_definition(dtype=str)
-    gender: str = pw.column_definition(dtype=str)
+    gender: str = pw.column_definition(dtype=str) 
     street: str = pw.column_definition(dtype=str)
     city: str = pw.column_definition(dtype=str)
     state: str = pw.column_definition(dtype=str)
@@ -61,8 +70,14 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
 # Debug counter
 debug_counter = {"total": 0, "alerts": 0}
 
-# Global Redis store - CHANGED FROM stats_store
+# Global stores
 redis_store = redis_stats_store.get_store()
+rules_loader = get_rules_loader()
+
+print("═══════════════════════════════════════════")
+print("   FRAUD DETECTOR — INFERENCE MODE (Rules-Based)")
+print("   (Using Shared JSON Rules)")
+print("═══════════════════════════════════════════")
 
 
 # ───────────────────────────────────────────────
@@ -123,19 +138,17 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
 
 
 # ───────────────────────────────────────────────
-# INFERENCE UDF WITH FULL TRANSACTION DATA + REDIS
+# INFERENCE UDF WITH RULES LOADER
 # ───────────────────────────────────────────────
 @pw.udf
-def run_infer_with_full_data(
+def run_infer_with_rules(
     trans_num, cc_num, amt, lat, long, merch_lat, merch_long,
     unix_time, merchant, category, city, state,
-    # Additional fields for complete output
     trans_date_trans_time, first, last, gender, street, zip,
     city_pop, job, dob
 ):
     """
-    Inference UDF that returns FULL transaction data in alerts.
-    Uses REDIS for stats lookups (not files).
+    Inference UDF that uses SHARED RULES LOADER for detection logic
     """
     
     debug_counter["total"] += 1
@@ -164,7 +177,7 @@ def run_infer_with_full_data(
     except:
         distance = 0.0
 
-    # Read aggregated stats from REDIS - CHANGED!
+    # Read aggregated stats from REDIS
     cust = redis_store.get_customer_profile(cc_num)
     merch_stats = redis_store.get_merchant_profile(merchant)
     cat = redis_store.get_category_profile(category)
@@ -182,13 +195,13 @@ def run_infer_with_full_data(
         "hr": float(hour),
         "merch_risk": float(merch_stats["fraud_rate"]),
         "cat_risk": float(cat["fraud_rate"]),
-        "online": float(1 if category in ["shopping_net", "misc_net", "grocery_net"] else 0),
-        "late_night": float(1 if 1 <= hour <= 5 else 0),
+        "online": float(1 if rules_loader.is_online_category(category) else 0),
+        "late_night": float(1 if rules_loader.is_late_night(hour) else 0),
         "fraud_history": float(cust["fraud_history"]),
         "n": float(min(cust["txn_count"], 1000)),
     }
 
-    # Run inference
+    # Run ML inference
     try:
         if model_reader.model_main is None or model_reader.model_validator is None:
             ml_score = 0.0
@@ -202,109 +215,22 @@ def run_infer_with_full_data(
         ml_score = 0.0
         model_status = f"ERROR:{str(e)[:30]}"
 
-    # Rules + ML decision (matching old detector logic)
-    reasons = []
-    tier = 0
-    confidence = 0
-    is_alert = False
-
-    # TIER 1 - Critical signals
-    extreme_signals = []
-    
-    if z_amt > 4.5:
-        extreme_signals.append(f"MASSIVE_AMT(Z={z_amt:.1f})")
-    elif z_amt > 3.8 and float(amt) > 500:
-        extreme_signals.append(f"HUGE_AMT(Z={z_amt:.1f},${amt:.0f})")
-    
-    if z_dist > 4:
-        extreme_signals.append(f"EXTREME_DIST(Z={z_dist:.1f})")
-    elif z_dist > 3.2 and distance > 100:
-        extreme_signals.append(f"VERY_FAR({distance:.0f}km)")
-    
-    if merch_stats["fraud_rate"] > 0.4 and merch_stats["total"] > 50:
-        extreme_signals.append(f"FRAUD_MERCHANT({merch_stats['fraud_rate']*100:.0f}%)")
-    
-    if cust["fraud_history"] >= 3:
-        extreme_signals.append(f"FRAUD_HISTORY({cust['fraud_history']})")
-    
-    if len(extreme_signals) >= 2:
-        is_alert = True
-        tier = 1
-        confidence = 95
-        reasons = extreme_signals[:3]
-    elif len(extreme_signals) >= 1 and ml_score >= 80:
-        is_alert = True
-        tier = 1
-        confidence = 90
-        reasons = extreme_signals + [f"ML{ml_score:.0f}"]
-    
-    # TIER 2 - Score-based
-    if not is_alert:
-        tier2_score = 0
-        tier2_reasons = []
-        
-        if z_amt > 3.5:
-            tier2_score += 40
-            tier2_reasons.append(f"VeryHighAmt(Z={z_amt:.1f})")
-        elif z_amt > 3:
-            tier2_score += 30
-            tier2_reasons.append(f"HighAmt(Z={z_amt:.1f})")
-        
-        if z_dist > 3.5:
-            tier2_score += 35
-            tier2_reasons.append(f"VeryFar(Z={z_dist:.1f})")
-        elif z_dist > 3:
-            tier2_score += 25
-            tier2_reasons.append(f"Far(Z={z_dist:.1f})")
-        
-        if merch_stats["fraud_rate"] > 0.3 and merch_stats["total"] > 40:
-            tier2_score += 35
-            tier2_reasons.append(f"RiskyMerch({merch_stats['fraud_rate']*100:.0f}%)")
-        
-        is_online = 1 if category in ["shopping_net", "misc_net", "grocery_net"] else 0
-        is_late = 1 if 1 <= hour <= 5 else 0
-        
-        if is_online and is_late and float(amt) > 400:
-            tier2_score += 25
-            tier2_reasons.append(f"LateOnline")
-        
-        if cust["fraud_history"] >= 2:
-            tier2_score += 30
-            tier2_reasons.append(f"PrevFraud({cust['fraud_history']})")
-        
-        if z_amt > 2.5 and z_dist > 2.5:
-            tier2_score += 25
-            tier2_reasons.append("Amt+Dist")
-        
-        if ml_score >= 80:
-            tier2_score += 25
-            tier2_reasons.append(f"ML{ml_score:.0f}")
-        elif ml_score >= 70:
-            tier2_score += 15
-        
-        if tier2_score >= 75:
-            is_alert = True
-            tier = 2
-            confidence = 80
-            reasons = tier2_reasons[:4]
-    
-    # TIER 3 - ML-based
-    if not is_alert:
-        if ml_score >= 82:
-            support_count = sum([
-                z_amt > 2, z_dist > 2, merch_stats["fraud_rate"] > 0.15,
-                cat["fraud_rate"] > 0.1, cust["fraud_history"] >= 1
-            ])
-            
-            if support_count >= 2:
-                is_alert = True
-                tier = 3
-                confidence = 75
-                reasons.append(f"ML{ml_score:.0f}")
-                if z_amt > 2.5: reasons.append(f"HighAmt")
-                if z_dist > 2.5: reasons.append(f"FarLoc")
-    
-    reason_str = "|".join(reasons[:4]) if reasons else ""
+    # ========================================
+    # USE RULES LOADER FOR FRAUD DETECTION
+    # ========================================
+    is_alert, tier, confidence, reason_str = rules_loader.evaluate_transaction(
+        z_amt=z_amt,
+        amt=float(amt),
+        z_dist=z_dist,
+        distance=distance,
+        merch_fraud_rate=merch_stats["fraud_rate"],
+        merch_total=merch_stats["total"],
+        cat_fraud_rate=cat["fraud_rate"],
+        fraud_history=cust["fraud_history"],
+        ml_score=ml_score,
+        category=category,
+        hour=hour
+    )
 
     # Log alerts
     if is_alert:
@@ -316,7 +242,7 @@ def run_infer_with_full_data(
     if debug_counter["total"] % 1000 == 0:
         print(f"[DETECTOR] Processed: {debug_counter['total']:,} | Alerts: {debug_counter['alerts']}")
 
-    # Return JSON with FULL transaction data (matching old detector format)
+    # Return JSON with FULL transaction data
     return json.dumps({
         "is_alert": is_alert,
         "trans_num": str(trans_num),
@@ -330,11 +256,10 @@ def run_infer_with_full_data(
         "risk_score": confidence,
         "reasons": reason_str,
         "confidence": confidence,
-        "actual_fraud": 0,  # Inference mode - we don't know actual fraud status
+        "actual_fraud": 0,
         "tier": tier,
         "ml_score": round(ml_score, 1),
         "model_status": model_status,
-        # Additional fields for comprehensive reporting
         "trans_date_trans_time": trans_date_trans_time,
         "first": first,
         "last": last,
@@ -354,7 +279,6 @@ def run_infer_with_full_data(
     })
 
 
-# Extract is_alert as boolean
 @pw.udf
 def extract_is_alert(alert_json: str) -> bool:
     if alert_json is None:
@@ -369,14 +293,10 @@ def extract_is_alert(alert_json: str) -> bool:
 # MAIN
 # ───────────────────────────────────────────────
 def run_detector():
-    print("═══════════════════════════════════════════")
-    print("   FRAUD DETECTOR — INFERENCE MODE (Redis)")
-    print("   (Report Generator Compatible)")
-    print("═══════════════════════════════════════════")
     print("Input:", INPUT_TOPIC)
-    print("Alerts (full data):", ALERTS_TOPIC)
-    print("Results (debug):", RESULTS_TOPIC)
-    print("Model file:", str(Path('./pathway_persistence') / "ml_models.pkl"))
+    print("Alerts:", ALERTS_TOPIC)
+    print("Results:", RESULTS_TOPIC)
+    print(f"Rules: {rules_loader.rules_file}")
     print(f"Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
     print()
     
@@ -401,7 +321,6 @@ def run_detector():
         persistent_id="detector_reader"
     )
 
-    # Add computed fields
     enriched = tx.select(
         *pw.this,
         hour=extract_hour(pw.this.unix_time),
@@ -409,25 +328,21 @@ def run_detector():
                            pw.this.merch_lat, pw.this.merch_long)
     )
 
-    # Run inference with ALL transaction fields
     results = enriched.select(
-        alert_json=run_infer_with_full_data(
+        alert_json=run_infer_with_rules(
             pw.this.trans_num, pw.this.cc_num, pw.this.amt,
             pw.this.lat, pw.this.long,
             pw.this.merch_lat, pw.this.merch_long,
             pw.this.unix_time, pw.this.merchant, pw.this.category,
             pw.this.city, pw.this.state,
-            # Pass additional fields
             pw.this.trans_date_trans_time, pw.this.first, pw.this.last,
             pw.this.gender, pw.this.street, pw.this.zip,
             pw.this.city_pop, pw.this.job, pw.this.dob
         )
     )
 
-    # Publish all results for debugging
     pw.io.nats.write(results, uri=NATS_URI, topic=RESULTS_TOPIC)
 
-    # Filter to alerts only
     parsed = results.select(
         alert_json=pw.this.alert_json,
         is_alert=extract_is_alert(pw.this.alert_json)
@@ -435,19 +350,17 @@ def run_detector():
 
     alerts = parsed.filter(pw.this.is_alert)
 
-    # Publish alerts with FULL data
     pw.io.nats.write(
         alerts.select(alert_json=pw.this.alert_json),
         uri=NATS_URI, 
         topic=ALERTS_TOPIC
     )
 
-    print("\n✓ Detector active - publishing full transaction data in alerts")
-    print("✓ Report generator will receive complete information")
-    print("✓ Reading stats from Redis (fast, concurrent-safe)")
+    print("\n✓ Detector active - using shared JSON rules")
+    print("✓ All fraud logic centralized in fraud_rules.json")
+    print("✓ Report generator will receive consistent alerts")
     print()
 
-    # Run with checkpoint config
     pw.run(persistence_config=CHECKPOINT_CONFIG)
 
 
