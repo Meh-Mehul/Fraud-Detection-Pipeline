@@ -23,8 +23,7 @@ For now, we are learning through the live-transaction's target variable and trai
 -      python3 run_detector.py
 -      python3 run_report.py
 -      python3 run_stats_updater.py
--      python3 publisher/pub_feed.py
--      python3 publisher/pub_det.py
+-      python3 publisher/pub_common.py
 
 
 
