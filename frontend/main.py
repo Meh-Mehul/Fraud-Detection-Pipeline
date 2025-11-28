@@ -1,32 +1,32 @@
 """
-Fraud Detection Dashboard - Standalone FastAPI Application
-
-A complete human-in-the-loop fraud detection system with:
-- Queue management for fraud alerts
-- Human review and labeling interface
-- Statistics tracking
-- Mock data generation for testing
-
-To run:
-1. Install dependencies: pip install fastapi uvicorn pydantic
-2. Run: python fraud_dashboard.py
-3. Open browser: http://localhost:8000
+FastAPI Fraud Report Review System
+FIXED VERSION: Uses PDF Parsing as fallback (No Mock Data)
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
-import json
 from pathlib import Path
+import json
+import time
 from datetime import datetime
-import random
-import uuid
+import os
+import re
 
-app = FastAPI(title="Fraud Detection Dashboard", version="1.0.0")
+# ---------------------------------------------------------
+# TRY TO IMPORT PYPDF FOR PARSING
+# ---------------------------------------------------------
+try:
+    from pypdf import PdfReader
+except ImportError:
+    print("WARNING: 'pypdf' not installed. PDF parsing will be limited.")
+    print("Please run: pip install pypdf")
+    PdfReader = None
 
-# CORS
+app = FastAPI(title="Fraud Report Review System")
+
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,664 +36,522 @@ app.add_middleware(
 )
 
 # Configuration
-QUEUE_SIZE = 10
-DATA_DIR = Path("./dashboard_data")
-DATA_DIR.mkdir(exist_ok=True)
+REPORTS_DIR = Path("./fraud_reports")
+QUEUE_SIZE = 50  # Showing up to 50 files
+STATS_FILE = Path("./review_stats.json")
 
-QUEUE_FILE = DATA_DIR / "queue.json"
-LABELS_FILE = DATA_DIR / "labels.json"
+# Global state
+review_queue = []
+review_stats = {"reviewed": 0, "fraud": 0, "legitimate": 0}
+reviewed_reports = set()
 
-# ═══════════════════════════════════════════════════════════
-# DATA MODELS
-# ═══════════════════════════════════════════════════════════
 
-class AlertMetadata(BaseModel):
-    report_id: str
+class FeedbackRequest(BaseModel):
+    filename: str
+    is_fraud: int
     trans_num: str
-    cc_num: int
-    amount: float
-    merchant: str
-    category: str
-    risk_score: int
-    ml_score: float
-    reasons: str
-    lat: float
-    long: float
-    merch_lat: float
-    merch_long: float
-    timestamp_created: str
-    status: str = "pending"
+    cc_num: str
 
-class HumanLabel(BaseModel):
-    report_id: str
-    label: str
-    confidence: int
-    notes: Optional[str] = None
-    reviewer_name: Optional[str] = "Anonymous"
 
-class LabelRecord(BaseModel):
-    report_id: str
-    label: str
-    confidence: int
-    notes: Optional[str]
-    reviewer_name: str
-    timestamp: str
-    trans_num: str
-    cc_num: int
-    amount: float
-    merchant: str
-    category: str
+def load_stats():
+    """Load review statistics from file"""
+    global review_stats, reviewed_reports
+    if STATS_FILE.exists():
+        with open(STATS_FILE, 'r') as f:
+            data = json.load(f)
+            review_stats = data.get('stats', review_stats)
+            reviewed_reports = set(data.get('reviewed_reports', []))
 
-# ═══════════════════════════════════════════════════════════
-# DATA PERSISTENCE
-# ═══════════════════════════════════════════════════════════
 
-def load_queue() -> List[dict]:
-    if not QUEUE_FILE.exists():
-        return []
-    try:
-        with open(QUEUE_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
+def save_stats():
+    """Save review statistics to file"""
+    with open(STATS_FILE, 'w') as f:
+        json.dump({
+            'stats': review_stats,
+            'reviewed_reports': list(reviewed_reports)
+        }, f, indent=2)
 
-def save_queue(queue: List[dict]):
-    with open(QUEUE_FILE, "w") as f:
-        json.dump(queue, f, indent=2)
 
-def load_labels() -> List[dict]:
-    if not LABELS_FILE.exists():
-        return []
-    try:
-        with open(LABELS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
-
-def save_labels(labels: List[dict]):
-    with open(LABELS_FILE, "w") as f:
-        json.dump(labels, f, indent=2)
-
-# ═══════════════════════════════════════════════════════════
-# MOCK DATA GENERATION
-# ═══════════════════════════════════════════════════════════
-
-MERCHANTS = [
-    "Amazon.com", "Walmart", "Target", "Best Buy", "Apple Store",
-    "Starbucks", "McDonald's", "Shell Gas", "Uber", "Netflix",
-    "Steam Games", "PlayStation Store", "Nike.com", "Home Depot", "CVS Pharmacy"
-]
-
-CATEGORIES = [
-    "online_retail", "grocery", "gas_station", "restaurant", "entertainment",
-    "electronics", "gaming", "subscription", "clothing", "home_improvement"
-]
-
-FRAUD_REASONS = [
-    "unusual_location", "high_amount", "velocity_spike", "new_merchant",
-    "foreign_transaction", "late_night", "multiple_attempts", "card_not_present"
-]
-
-def generate_mock_alert() -> dict:
-    """Generate a realistic mock fraud alert"""
-    report_id = str(uuid.uuid4())
-    trans_num = f"TXN{random.randint(100000, 999999)}"
-    cc_num = random.randint(1000, 9999)
-    amount = round(random.uniform(50, 5000), 2)
-    merchant = random.choice(MERCHANTS)
-    category = random.choice(CATEGORIES)
+def scan_reports():
+    """Scan reports directory and build queue"""
+    global review_queue
     
-    # High-risk transactions have more reasons
-    num_reasons = random.randint(2, 4) if random.random() > 0.5 else random.randint(1, 2)
-    reasons = "|".join(random.sample(FRAUD_REASONS, num_reasons))
+    if not REPORTS_DIR.exists():
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        return
     
-    # Risk score correlates with number of reasons and amount
-    base_risk = len(reasons.split("|")) * 15 + (amount / 100)
-    risk_score = min(100, int(base_risk + random.randint(-10, 20)))
-    ml_score = risk_score / 100.0 + random.uniform(-0.1, 0.1)
+    reports = []
+    # FIX: Detect ALL .pdf files
+    for pdf_file in REPORTS_DIR.glob("*.pdf"):
+        try:
+            timestamp = pdf_file.stat().st_mtime
+            parts = pdf_file.stem.split('_')
+            cc_suffix = parts[-1] if len(parts) > 1 else "0000"
+            
+            report_data = {
+                'filename': pdf_file.name,
+                'filepath': str(pdf_file),
+                'timestamp': timestamp,
+                'cc_num': cc_suffix,
+                'reviewed': pdf_file.name in reviewed_reports
+            }
+            
+            reports.append(report_data)
+        except Exception as e:
+            print(f"Error processing {pdf_file}: {e}")
+            continue
     
-    return {
-        "report_id": report_id,
-        "trans_num": trans_num,
-        "cc_num": cc_num,
-        "amount": amount,
-        "merchant": merchant,
-        "category": category,
-        "risk_score": risk_score,
-        "ml_score": round(ml_score, 2),
-        "reasons": reasons,
-        "lat": round(random.uniform(25, 48), 4),
-        "long": round(random.uniform(-120, -70), 4),
-        "merch_lat": round(random.uniform(25, 48), 4),
-        "merch_long": round(random.uniform(-120, -70), 4),
-        "timestamp_created": datetime.utcnow().isoformat(),
-        "status": "pending"
+    reports.sort(key=lambda x: x['timestamp'], reverse=True)
+    review_queue = reports[:QUEUE_SIZE]
+
+
+def parse_alert_json_from_pdf(pdf_path):
+    """
+    1. Try to load companion JSON.
+    2. If missing, Parse PDF text directly.
+    3. If that fails, return safe empty defaults.
+    """
+    json_file = pdf_path.with_suffix('.json')
+    
+    # ------------------------------------------------
+    # STRATEGY 1: Load JSON (Best Data)
+    # ------------------------------------------------
+    if json_file.exists():
+        try:
+            with open(json_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass 
+
+    # ------------------------------------------------
+    # STRATEGY 2: Parse PDF Text (Fallback)
+    # ------------------------------------------------
+    
+    # Initialize safe defaults (No random data)
+    data = {
+        'trans_num': "UNKNOWN",
+        'cc_num': "0000",
+        'amt': 0.00,
+        'merchant': "Unknown Merchant",
+        'category': "Uncategorized",
+        'location': "Unknown",
+        'risk_score': 0,
+        'tier': 1,
+        'reasons': "Data extracted from PDF",
+        'confidence': 0,
+        'ml_score': 0,
+        'actual_fraud': 0,
+        'first': "", 'last': "", 'job': "",
+        'street': "", 'city': "", 'state': "", 'zip': "",
+        'distance': 0.0
     }
 
-# ═══════════════════════════════════════════════════════════
-# API ENDPOINTS
-# ═══════════════════════════════════════════════════════════
+    if PdfReader:
+        try:
+            reader = PdfReader(pdf_path)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+            
+            # --- Regex Extraction Logic ---
+            # Attempt to find standard patterns in the text
+            
+            # Merchant (e.g. "Merchant: Amazon")
+            m_match = re.search(r"(?:Merchant|Vendor)\s*[:.]?\s*([^\n]+)", text, re.IGNORECASE)
+            if m_match: data['merchant'] = m_match.group(1).strip()
 
-@app.get("/")
+            # Amount (e.g. "Amount: $150.00")
+            a_match = re.search(r"(?:Amount|Total)\s*[:.]?\s*\$?\s*([\d,]+\.\d{2})", text, re.IGNORECASE)
+            if a_match: 
+                try: data['amt'] = float(a_match.group(1).replace(',', ''))
+                except: pass
+
+            # Risk Score (e.g. "Risk Score: 85")
+            r_match = re.search(r"Risk\s*(?:Score)?\s*[:.]?\s*(\d+)", text, re.IGNORECASE)
+            if r_match: 
+                data['risk_score'] = int(r_match.group(1))
+                # Auto-calculate tier based on risk if not found
+                data['tier'] = 3 if data['risk_score'] > 80 else 2 if data['risk_score'] > 50 else 1
+
+            # Transaction ID
+            t_match = re.search(r"(?:Transaction|ID)\s*[:#]?\s*([A-Z0-9-]+)", text, re.IGNORECASE)
+            if t_match: data['trans_num'] = t_match.group(1)
+
+            # Location
+            l_match = re.search(r"Location\s*[:.]?\s*([^\n]+)", text, re.IGNORECASE)
+            if l_match: data['location'] = l_match.group(1).strip()
+            
+            # CC Number (Last 4)
+            c_match = re.search(r"(?:Card|CC)\s*(?:#|No\.?)?\s*(?:\*{4})?(\d{4})", text)
+            if c_match: data['cc_num'] = c_match.group(1)
+
+        except Exception as e:
+            print(f"Failed to parse PDF {pdf_path.name}: {e}")
+    
+    return data
+
+
+@app.on_event("startup")
+async def startup_event():
+    load_stats()
+    scan_reports()
+    print(f"Loaded {len(review_queue)} reports into queue")
+
+
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the React frontend"""
+    """Serve main HTML interface"""
     html_content = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fraud Detection Dashboard</title>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <title>Fraud Investigation Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body>
-    <div id="root"></div>
-    <script type="text/babel">
-        const { useState, useEffect } = React;
-
-        const API_BASE = '';
-
-        function FraudDashboard() {
-          const [queue, setQueue] = useState([]);
-          const [stats, setStats] = useState(null);
-          const [selectedReport, setSelectedReport] = useState(null);
-          const [label, setLabel] = useState('');
-          const [confidence, setConfidence] = useState(50);
-          const [notes, setNotes] = useState('');
-          const [reviewer, setReviewer] = useState('Anonymous');
-          const [loading, setLoading] = useState(false);
-          const [submitted, setSubmitted] = useState(false);
-
-          useEffect(() => {
-            fetchQueue();
-            fetchStats();
-            const interval = setInterval(() => {
-              fetchQueue();
-              fetchStats();
-            }, 5000);
-            return () => clearInterval(interval);
-          }, []);
-
-          const fetchQueue = async () => {
-            try {
-              const res = await fetch(`${API_BASE}/queue`);
-              const data = await res.json();
-              setQueue(data.queue || []);
-            } catch (err) {
-              console.error('Error fetching queue:', err);
-            }
-          };
-
-          const fetchStats = async () => {
-            try {
-              const res = await fetch(`${API_BASE}/stats`);
-              const data = await res.json();
-              setStats(data);
-            } catch (err) {
-              console.error('Error fetching stats:', err);
-            }
-          };
-
-          const handleSubmitLabel = async () => {
-            if (!label || !selectedReport) {
-              alert('Please select a label');
-              return;
-            }
-
-            setLoading(true);
-            try {
-              const res = await fetch(`${API_BASE}/reports/${selectedReport.report_id}/label`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  report_id: selectedReport.report_id,
-                  label,
-                  confidence: parseInt(confidence),
-                  notes,
-                  reviewer_name: reviewer
-                })
-              });
-
-              if (res.ok) {
-                setSubmitted(true);
-                setTimeout(() => {
-                  setSelectedReport(null);
-                  setLabel('');
-                  setConfidence(50);
-                  setNotes('');
-                  setSubmitted(false);
-                  fetchQueue();
-                  fetchStats();
-                }, 2000);
-              } else {
-                alert('Error submitting label');
-              }
-            } catch (err) {
-              alert('Error: ' + err.message);
-            } finally {
-              setLoading(false);
-            }
-          };
-
-          const getRiskColor = (score) => {
-            if (score >= 90) return 'text-red-700 bg-red-50';
-            if (score >= 80) return 'text-orange-700 bg-orange-50';
-            if (score >= 70) return 'text-yellow-700 bg-yellow-50';
-            return 'text-green-700 bg-green-50';
-          };
-
-          if (selectedReport) {
-            return (
-              <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-                <div className="max-w-4xl mx-auto">
-                  <div className="mb-6">
-                    <button
-                      onClick={() => setSelectedReport(null)}
-                      className="flex items-center gap-2 text-slate-300 hover:text-white transition"
-                    >
-                      ← Back to Queue
-                    </button>
-                  </div>
-
-                  <div className="bg-slate-800 rounded-lg border border-slate-700 p-6 mb-6">
-                    <div className="grid grid-cols-2 gap-6">
-                      <div>
-                        <h3 className="text-slate-400 text-sm uppercase tracking-wide">Transaction ID</h3>
-                        <p className="text-white text-lg font-mono mt-1">{selectedReport.trans_num}</p>
-                      </div>
-                      <div>
-                        <h3 className="text-slate-400 text-sm uppercase tracking-wide">Amount</h3>
-                        <p className="text-white text-lg font-bold mt-1">${selectedReport.amount.toFixed(2)}</p>
-                      </div>
-                      <div>
-                        <h3 className="text-slate-400 text-sm uppercase tracking-wide">Merchant</h3>
-                        <p className="text-white text-lg mt-1">{selectedReport.merchant}</p>
-                      </div>
-                      <div>
-                        <h3 className="text-slate-400 text-sm uppercase tracking-wide">Category</h3>
-                        <p className="text-white text-lg mt-1">{selectedReport.category}</p>
-                      </div>
+<body class="bg-gray-50">
+    <div class="bg-gradient-to-r from-gray-900 to-gray-800 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-6 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <svg class="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <div>
+                        <h1 class="text-2xl font-bold">Fraud Investigation Center</h1>
+                        <p class="text-gray-300 text-sm">Real-time Report Review System</p>
                     </div>
-
-                    <div className="mt-6 pt-6 border-t border-slate-700">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="text-slate-400 text-sm uppercase tracking-wide">Risk Score</h3>
-                          <div className={`mt-2 px-3 py-1 rounded-full inline-block font-bold ${getRiskColor(selectedReport.risk_score)}`}>
-                            {selectedReport.risk_score}/100
-                          </div>
-                        </div>
-                        <div>
-                          <h3 className="text-slate-400 text-sm uppercase tracking-wide">ML Score</h3>
-                          <p className="text-white text-2xl font-bold mt-1">{selectedReport.ml_score.toFixed(1)}</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-6 pt-6 border-t border-slate-700">
-                      <h3 className="text-slate-400 text-sm uppercase tracking-wide mb-3">Detection Indicators</h3>
-                      <div className="flex flex-wrap gap-2">
-                        {selectedReport.reasons.split('|').map((reason, i) => (
-                          <span key={i} className="px-3 py-1 bg-red-500/20 text-red-300 rounded-full text-sm font-mono">
-                            {reason}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {!submitted ? (
-                    <div className="bg-slate-800 rounded-lg border border-slate-700 p-6">
-                      <h2 className="text-white text-xl font-bold mb-6">👤 Human Review</h2>
-
-                      <div className="mb-6">
-                        <h3 className="text-slate-300 font-semibold mb-3">Is this fraud?</h3>
-                        <div className="space-y-2">
-                          {['fraud', 'legitimate', 'uncertain'].map((opt) => (
-                            <label key={opt} className="flex items-center gap-3 cursor-pointer group">
-                              <input
-                                type="radio"
-                                name="label"
-                                value={opt}
-                                checked={label === opt}
-                                onChange={(e) => setLabel(e.target.value)}
-                                className="w-4 h-4"
-                              />
-                              <span className="text-slate-300 group-hover:text-white transition capitalize">
-                                {opt === 'fraud' && '❌ Fraud'}
-                                {opt === 'legitimate' && '✅ Legitimate'}
-                                {opt === 'uncertain' && '❓ Uncertain'}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="mb-6">
-                        <div className="flex justify-between items-center mb-2">
-                          <h3 className="text-slate-300 font-semibold">Your Confidence</h3>
-                          <span className="text-white font-bold text-lg">{confidence}%</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={confidence}
-                          onChange={(e) => setConfidence(e.target.value)}
-                          className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-                        />
-                      </div>
-
-                      <div className="mb-6">
-                        <h3 className="text-slate-300 font-semibold mb-2">Additional Notes (Optional)</h3>
-                        <textarea
-                          value={notes}
-                          onChange={(e) => setNotes(e.target.value)}
-                          placeholder="Add investigation notes..."
-                          className="w-full px-4 py-3 bg-slate-700 text-white rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none resize-none"
-                          rows="4"
-                        />
-                      </div>
-
-                      <div className="mb-6">
-                        <h3 className="text-slate-300 font-semibold mb-2">Reviewer Name</h3>
-                        <input
-                          type="text"
-                          value={reviewer}
-                          onChange={(e) => setReviewer(e.target.value)}
-                          placeholder="Your name"
-                          className="w-full px-4 py-2 bg-slate-700 text-white rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none"
-                        />
-                      </div>
-
-                      <div className="flex gap-3">
-                        <button
-                          onClick={() => setSelectedReport(null)}
-                          className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={handleSubmitLabel}
-                          disabled={!label || loading}
-                          className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:bg-slate-600"
-                        >
-                          {loading ? 'Submitting...' : 'Submit Label'}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-green-500/10 border border-green-500 rounded-lg p-6 text-center">
-                      <div className="text-4xl mb-3">✅</div>
-                      <h3 className="text-white text-lg font-bold">Label Submitted!</h3>
-                      <p className="text-green-300 mt-2">Redirecting to queue...</p>
-                    </div>
-                  )}
                 </div>
-              </div>
-            );
-          }
-
-          return (
-            <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-              <div className="max-w-7xl mx-auto">
-                <div className="mb-8">
-                  <h1 className="text-4xl font-bold text-white mb-2">🔍 Fraud Detection Dashboard</h1>
-                  <p className="text-slate-400">Human-in-the-Loop Alert Review System</p>
+                <div class="flex items-center gap-6">
+                    <div class="text-right">
+                        <div class="text-2xl font-bold text-green-400" id="stat-reviewed">0</div>
+                        <div class="text-xs text-gray-400">Reviewed</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-2xl font-bold text-red-400" id="stat-fraud">0</div>
+                        <div class="text-xs text-gray-400">Fraud</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-2xl font-bold text-blue-400" id="stat-legitimate">0</div>
+                        <div class="text-xs text-gray-400">Legitimate</div>
+                    </div>
                 </div>
-
-                {stats && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-                    <div className="bg-slate-800 rounded-lg border border-slate-700 p-4">
-                      <h3 className="text-slate-400 text-sm uppercase tracking-wide">Queue Status</h3>
-                      <div className="mt-2 flex items-end gap-2">
-                        <p className="text-3xl font-bold text-white">{stats.queue.size}/{stats.queue.capacity}</p>
-                        <p className="text-slate-400 mb-1">{stats.queue.utilization}</p>
-                      </div>
-                      <div className="mt-3 w-full bg-slate-700 rounded-full h-2">
-                        <div
-                          className="bg-blue-500 h-2 rounded-full transition-all"
-                          style={{ width: stats.queue.utilization }}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-800 rounded-lg border border-slate-700 p-4">
-                      <h3 className="text-slate-400 text-sm uppercase tracking-wide">Labels Today</h3>
-                      <p className="text-3xl font-bold text-white mt-2">{stats.labels.count_today}</p>
-                    </div>
-
-                    <div className="bg-slate-800 rounded-lg border border-slate-700 p-4">
-                      <h3 className="text-slate-400 text-sm uppercase tracking-wide">Total Labels</h3>
-                      <p className="text-3xl font-bold text-white mt-2">{stats.labels.total_files}</p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="bg-slate-800 rounded-lg border border-slate-700 p-6">
-                  <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-2xl font-bold text-white">📋 Review Queue</h2>
-                    <button
-                      onClick={() => {
-                        fetchQueue();
-                        fetchStats();
-                      }}
-                      className="p-2 hover:bg-slate-700 rounded-lg transition"
-                    >
-                      🔄
-                    </button>
-                  </div>
-
-                  {queue.length === 0 ? (
-                    <div className="text-center py-12">
-                      <div className="text-6xl mb-4">✅</div>
-                      <p className="text-slate-400 text-lg">No alerts pending review</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {queue.map((alert, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => setSelectedReport(alert)}
-                          className="w-full bg-slate-700 hover:bg-slate-600 rounded-lg p-4 transition text-left border border-slate-600 hover:border-slate-500 group"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3">
-                                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${getRiskColor(alert.risk_score)}`}>
-                                  {alert.risk_score >= 80 ? '🔴' : alert.risk_score >= 70 ? '🟠' : '🟡'}
-                                </div>
-                                <div>
-                                  <p className="text-white font-semibold">{alert.trans_num}</p>
-                                  <p className="text-slate-400 text-sm">{alert.merchant} • ${alert.amount.toFixed(2)}</p>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="text-right mr-4">
-                              <div className={`px-3 py-1 rounded-full text-sm font-bold ${getRiskColor(alert.risk_score)}`}>
-                                {alert.risk_score}/100
-                              </div>
-                            </div>
-                            <span className="text-slate-500 group-hover:text-slate-300 transition">›</span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="mt-8 text-center text-slate-500 text-sm">
-                  <p>Last updated: {new Date().toLocaleTimeString()}</p>
-                  <p className="mt-1">Queue auto-refreshes every 5 seconds</p>
-                </div>
-              </div>
             </div>
-          );
+        </div>
+    </div>
+
+    <div class="max-w-7xl mx-auto px-6 py-6">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-1 bg-white rounded-lg shadow-md border border-gray-200">
+                <div class="p-4 border-b border-gray-200 bg-gray-50">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <h2 class="font-bold text-gray-900">Review Queue</h2>
+                            <span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold" id="queue-count">0</span>
+                        </div>
+                        <button id="refresh-btn" class="p-2 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 transition-colors">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="text-xs text-gray-500 mt-1" id="last-update">Updated: --:--:--</div>
+                </div>
+
+                <div id="queue-list" class="overflow-y-auto max-h-96">
+                    <div class="p-8 text-center text-gray-500">
+                        <p>Loading reports...</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="details-panel" class="lg:col-span-2 bg-white rounded-lg shadow-md border border-gray-200">
+                <div class="flex flex-col items-center justify-center h-96 text-gray-500">
+                    <p class="text-lg font-semibold">Select a report to review</p>
+                    <p class="text-sm">Choose a report from the queue to begin investigation</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedReport = null;
+        let autoRefresh = true;
+
+        function getRiskColor(score) {
+            if (score >= 90) return 'text-red-700 bg-red-50 border-red-300';
+            if (score >= 80) return 'text-orange-700 bg-orange-50 border-orange-300';
+            if (score >= 70) return 'text-yellow-700 bg-yellow-50 border-yellow-300';
+            return 'text-blue-700 bg-blue-50 border-blue-300';
         }
 
-        ReactDOM.render(<FraudDashboard />, document.getElementById('root'));
+        function getTierBadge(tier) {
+            const colors = {1: 'bg-red-600', 2: 'bg-orange-500', 3: 'bg-yellow-500'};
+            return colors[tier] || 'bg-gray-500';
+        }
+
+        async function fetchQueue() {
+            try {
+                const response = await fetch('/api/queue');
+                const data = await response.json();
+                
+                document.getElementById('stat-reviewed').textContent = data.stats.reviewed;
+                document.getElementById('stat-fraud').textContent = data.stats.fraud;
+                document.getElementById('stat-legitimate').textContent = data.stats.legitimate;
+                
+                const unreviewed = data.queue.filter(r => !r.reviewed).length;
+                document.getElementById('queue-count').textContent = unreviewed;
+                document.getElementById('last-update').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+                
+                renderQueue(data.queue);
+            } catch (error) {
+                console.error('Error fetching queue:', error);
+            }
+        }
+
+        function renderQueue(queue) {
+            const queueList = document.getElementById('queue-list');
+            
+            if (queue.length === 0) {
+                queueList.innerHTML = '<div class="p-8 text-center text-gray-500"><p>No reports in queue</p></div>';
+                return;
+            }
+            
+            queueList.innerHTML = queue.map(report => {
+                const selected = selectedReport && selectedReport.filename === report.filename;
+                const ccDisplay = report.cc_num ? report.cc_num.toString().slice(-4) : '0000';
+                
+                return `
+                    <button onclick="selectReport('${report.filename}')" 
+                        class="w-full p-4 border-b border-gray-100 hover:bg-gray-50 transition-colors text-left ${report.reviewed ? 'opacity-50' : ''} ${selected ? 'bg-blue-50 border-l-4 border-l-blue-600' : ''}">
+                        <div class="flex items-start justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <span class="px-2 py-1 rounded text-xs font-bold text-white ${getTierBadge(report.tier)}">T${report.tier}</span>
+                                <span class="px-2 py-1 rounded text-xs font-semibold border ${getRiskColor(report.risk_score)}">${report.risk_score}</span>
+                            </div>
+                            ${report.reviewed ? '<span class="text-xs text-green-600 font-semibold">✓ Reviewed</span>' : ''}
+                        </div>
+                        <div class="text-sm font-semibold text-gray-900 mb-1">****${ccDisplay}</div>
+                        <div class="text-xs text-gray-600 mb-1">$${report.amt.toFixed(2)} • ${report.merchant}</div>
+                        <div class="text-xs text-gray-500">${new Date(report.timestamp).toLocaleString()}</div>
+                    </button>
+                `;
+            }).join('');
+        }
+
+        async function selectReport(filename) {
+            try {
+                const response = await fetch('/api/report/' + filename);
+                const data = await response.json();
+                selectedReport = data;
+                renderReportDetails(data);
+            } catch (error) {
+                console.error('Error fetching report:', error);
+            }
+        }
+
+        function renderReportDetails(report) {
+            const panel = document.getElementById('details-panel');
+            const data = report.data;
+            const ccDisplay = data.cc_num ? data.cc_num.toString().slice(-4) : '0000';
+            
+            const actionButtons = !report.reviewed && report.in_queue ? `
+                <div class="flex gap-3">
+                    <button onclick="submitFeedback(true)" class="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-bold">✗ CONFIRM FRAUD</button>
+                    <button onclick="submitFeedback(false)" class="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-bold">✓ MARK LEGITIMATE</button>
+                </div>
+            ` : report.reviewed ? '<div class="px-4 py-3 rounded-lg font-bold text-center bg-green-100 text-green-700">✓ Reviewed</div>' : '<div class="px-4 py-3 bg-yellow-100 text-yellow-800 rounded-lg text-sm text-center">⚠️ Outside active queue</div>';
+            
+            panel.innerHTML = `
+                <div class="flex flex-col h-full">
+                    <div class="p-6 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
+                        <div class="flex items-start justify-between mb-4">
+                            <div>
+                                <div class="flex items-center gap-3 mb-2">
+                                    <span class="px-3 py-1 rounded-lg text-sm font-bold text-white ${getTierBadge(data.tier)}">TIER ${data.tier}</span>
+                                    <span class="px-3 py-1 rounded-lg text-sm font-bold border-2 ${getRiskColor(data.risk_score)}">RISK: ${data.risk_score}/100</span>
+                                    ${data.actual_fraud === 1 ? '<span class="px-3 py-1 bg-red-600 text-white rounded-lg text-sm font-bold">CONFIRMED FRAUD</span>' : ''}
+                                </div>
+                                <h2 class="text-2xl font-bold text-gray-900">Transaction ${data.trans_num}</h2>
+                                <p class="text-gray-600">Card: ****-****-****-${ccDisplay}</p>
+                            </div>
+                            <a href="${report.pdf_url}" target="_blank" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">View PDF</a>
+                        </div>
+                        ${actionButtons}
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-6">
+                        <div class="space-y-6">
+                            <div>
+                                <h3 class="text-lg font-bold text-gray-900 mb-3">Transaction Details</h3>
+                                <div class="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
+                                    <div><div class="text-sm text-gray-600">Amount</div><div class="text-xl font-bold">$${data.amt.toFixed(2)}</div></div>
+                                    <div><div class="text-sm text-gray-600">ML Score</div><div class="text-xl font-bold">${data.ml_score}</div></div>
+                                    <div><div class="text-sm text-gray-600">Merchant</div><div class="font-semibold">${data.merchant}</div></div>
+                                    <div><div class="text-sm text-gray-600">Category</div><div class="font-semibold">${data.category}</div></div>
+                                    <div><div class="text-sm text-gray-600">Location</div><div class="font-semibold">${data.location}</div></div>
+                                    <div><div class="text-sm text-gray-600">Distance</div><div class="font-semibold">${data.distance} km</div></div>
+                                </div>
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-bold text-gray-900 mb-3">Customer Information</h3>
+                                <div class="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
+                                    <div><div class="text-sm text-gray-600">Name</div><div class="font-semibold">${data.first} ${data.last}</div></div>
+                                    <div><div class="text-sm text-gray-600">Job</div><div class="font-semibold">${data.job}</div></div>
+                                    <div class="col-span-2"><div class="text-sm text-gray-600">Address</div><div class="font-semibold">${data.street}, ${data.city}, ${data.state} ${data.zip}</div></div>
+                                </div>
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-bold text-gray-900 mb-3">Fraud Indicators</h3>
+                                <div class="bg-red-50 border border-red-200 p-4 rounded-lg">
+                                    <div class="text-sm font-mono text-gray-700 break-all">${data.reasons}</div>
+                                    <div class="mt-3 text-sm text-gray-600"><strong>Confidence:</strong> ${data.confidence}%</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitFeedback(isFraud) {
+            if (!selectedReport) return;
+            
+            try {
+                const response = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        filename: selectedReport.filename,
+                        is_fraud: isFraud ? 1 : 0,
+                        trans_num: selectedReport.data.trans_num,
+                        cc_num: selectedReport.data.cc_num.toString()
+                    })
+                });
+
+                if (response.ok) {
+                    await fetchQueue();
+                    alert(isFraud ? '✓ Marked as FRAUD' : '✓ Marked as LEGITIMATE');
+                    
+                    const queueData = await fetch('/api/queue').then(r => r.json());
+                    const nextReport = queueData.queue.find(r => !r.reviewed);
+                    if (nextReport) {
+                        setTimeout(() => selectReport(nextReport.filename), 500);
+                    }
+                }
+            } catch (error) {
+                console.error('Error submitting feedback:', error);
+                alert('Failed to submit feedback');
+            }
+        }
+
+        setInterval(() => { if (autoRefresh) fetchQueue(); }, 5000);
+        fetchQueue();
+        document.getElementById('refresh-btn').addEventListener('click', fetchQueue);
     </script>
 </body>
 </html>
-    """
+"""
     return HTMLResponse(content=html_content)
 
-@app.get("/queue")
-async def get_queue_status():
-    """Get current queue with all pending reports"""
-    queue = load_queue()
-    pending = [a for a in queue if a["status"] == "pending"]
-    
-    return {
-        "queue": pending,
-        "current_size": len(queue),
-        "capacity": QUEUE_SIZE,
-        "available_slots": QUEUE_SIZE - len(queue)
-    }
 
-@app.get("/stats")
-async def get_system_stats():
-    """Get system statistics"""
-    queue = load_queue()
-    labels = load_labels()
+@app.get("/api/queue")
+async def get_queue():
+    """Get current review queue with stats"""
+    scan_reports()
     
-    today = datetime.utcnow().date().isoformat()
-    labels_today = sum(1 for l in labels if l.get("timestamp", "").startswith(today))
-    
-    return {
-        "queue": {
-            "size": len(queue),
-            "capacity": QUEUE_SIZE,
-            "utilization": f"{(len(queue) / QUEUE_SIZE) * 100:.1f}%"
-        },
-        "labels": {
-            "count_today": labels_today,
-            "total_files": len(labels)
-        }
-    }
-
-@app.post("/reports/{report_id}/label")
-async def submit_label(report_id: str, submission: HumanLabel):
-    """Submit human label for report"""
-    
-    if submission.label not in ["fraud", "legitimate", "uncertain"]:
-        raise HTTPException(status_code=400, detail="Invalid label")
-    
-    if not (0 <= submission.confidence <= 100):
-        raise HTTPException(status_code=400, detail="Confidence must be 0-100")
-    
-    queue = load_queue()
-    alert = next((a for a in queue if a["report_id"] == report_id), None)
-    
-    if not alert:
-        raise HTTPException(status_code=404, detail="Report not found in queue")
-    
-    # Create label record
-    label_rec = {
-        "report_id": report_id,
-        "label": submission.label,
-        "confidence": submission.confidence,
-        "notes": submission.notes,
-        "reviewer_name": submission.reviewer_name,
-        "timestamp": datetime.utcnow().isoformat(),
-        "trans_num": alert["trans_num"],
-        "cc_num": alert["cc_num"],
-        "amount": alert["amount"],
-        "merchant": alert["merchant"],
-        "category": alert["category"]
-    }
-    
-    # Save label
-    labels = load_labels()
-    labels.append(label_rec)
-    save_labels(labels)
-    
-    # Remove from queue
-    queue = [a for a in queue if a["report_id"] != report_id]
-    save_queue(queue)
-    
-    print(f"✓ Label submitted: {report_id} → {submission.label} ({submission.confidence}%)")
-    
-    return {
-        "status": "labeled",
-        "report_id": report_id,
-        "label": submission.label,
-        "confidence": submission.confidence
-    }
-
-@app.post("/admin/generate-alerts")
-async def generate_test_alerts(count: int = 5):
-    """Generate mock alerts for testing (Admin endpoint)"""
-    queue = load_queue()
-    
-    generated = 0
-    for _ in range(count):
-        if len(queue) >= QUEUE_SIZE:
-            break
+    queue_data = []
+    for report in review_queue:
+        pdf_path = Path(report['filepath'])
+        data = parse_alert_json_from_pdf(pdf_path)
         
-        alert = generate_mock_alert()
-        queue.append(alert)
-        generated += 1
-    
-    save_queue(queue)
+        queue_data.append({
+            'filename': report['filename'],
+            'timestamp': datetime.fromtimestamp(report['timestamp']).isoformat(),
+            'cc_num': data.get('cc_num', report['cc_num']),
+            'amt': data.get('amt', 0.0),
+            'merchant': data.get('merchant', 'Unknown'),
+            'risk_score': data.get('risk_score', 0),
+            'tier': data.get('tier', 0),
+            'reviewed': report['reviewed']
+        })
     
     return {
-        "status": "success",
-        "generated": generated,
-        "queue_size": len(queue),
-        "message": f"Generated {generated} mock alerts"
+        'queue': queue_data,
+        'stats': review_stats,
+        'queue_size': QUEUE_SIZE
     }
 
-@app.delete("/admin/clear-queue")
-async def clear_queue():
-    """Clear the entire queue (Admin endpoint)"""
-    save_queue([])
-    return {"status": "cleared", "message": "Queue cleared"}
 
-@app.delete("/admin/clear-labels")
-async def clear_labels():
-    """Clear all labels (Admin endpoint)"""
-    save_labels([])
-    return {"status": "cleared", "message": "Labels cleared"}
-
-@app.get("/labels")
-async def get_all_labels():
-    """Get all labeled reports"""
-    labels = load_labels()
+@app.get("/api/report/{filename}")
+async def get_report(filename: str):
+    """Get detailed report data"""
+    pdf_path = REPORTS_DIR / filename
+    
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    data = parse_alert_json_from_pdf(pdf_path)
+    in_queue = any(r['filename'] == filename for r in review_queue)
+    
     return {
-        "count": len(labels),
-        "labels": sorted(labels, key=lambda x: x.get("timestamp", ""), reverse=True)
+        'filename': filename,
+        'data': data,
+        'pdf_url': f"/api/pdf/{filename}",
+        'reviewed': filename in reviewed_reports,
+        'in_queue': in_queue
     }
+
+
+@app.get("/api/pdf/{filename}")
+async def get_pdf(filename: str):
+    """Serve PDF file"""
+    pdf_path = REPORTS_DIR / filename
+    
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found")
+    
+    return FileResponse(pdf_path, media_type="application/pdf")
+
+
+@app.post("/api/feedback")
+async def submit_feedback(feedback: FeedbackRequest):
+    """Submit fraud/legitimate feedback"""
+    global review_stats, reviewed_reports
+    
+    reviewed_reports.add(feedback.filename)
+    review_stats['reviewed'] += 1
+    
+    if feedback.is_fraud == 1:
+        review_stats['fraud'] += 1
+    else:
+        review_stats['legitimate'] += 1
+    
+    save_stats()
+    
+    print(f"Feedback: {feedback.filename} -> {'FRAUD' if feedback.is_fraud else 'LEGITIMATE'}")
+    
+    scan_reports()
+    
+    return {
+        'success': True,
+        'message': 'Feedback recorded',
+        'stats': review_stats
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
     
     print("=" * 60)
-    print("🔍 Fraud Detection Dashboard")
+    print("  FRAUD REPORT REVIEW SYSTEM (FIXED - NO MOCK DATA)")
     print("=" * 60)
-    print("Starting server at http://localhost:8000")
-    print()
-    print("API Endpoints:")
-    print("  • GET  /                     - Dashboard UI")
-    print("  • GET  /queue                - Get review queue")
-    print("  • GET  /stats                - Get statistics")
-    print("  • POST /reports/{id}/label   - Submit label")
-    print("  • POST /admin/generate-alerts?count=5 - Generate test data")
-    print("  • DELETE /admin/clear-queue  - Clear queue")
-    print("  • GET  /labels               - View all labels")
-    print()
-    print("Quick Start:")
-    print("  1. Open http://localhost:8000 in your browser")
-    print("  2. Generate test data:")
-    print("     curl -X POST http://localhost:8000/admin/generate-alerts?count=5")
+    print(f"  Reports directory: {REPORTS_DIR}")
+    print(f"  Queue size: {QUEUE_SIZE}")
+    print(f"  Starting server on http://localhost:8000")
     print("=" * 60)
     
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
