@@ -13,6 +13,11 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from shared.metrics import initialize_metrics, get_metrics_manager
+
+
+METRICS_PORT = 8004
+
 
 # ----------------------------------------------------------------------------
 # SETUP: Import Shared Rules Loader
@@ -702,6 +707,10 @@ def process_alert(alert_json: str) -> str:
 # ============================================================================
 # MAIN REPORT GENERATOR
 # ============================================================================
+
+metrics_manager = initialize_metrics("report_generator", port=METRICS_PORT)
+
+
 
 def run_report_generator():
     """Main report generation pipeline with NATS"""

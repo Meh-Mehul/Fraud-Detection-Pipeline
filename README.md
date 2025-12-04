@@ -18,6 +18,7 @@ For now, we are learning through the live-transaction's target variable and trai
 2. Install the dataset as name it as ```fraudTrain.csv``` and store in the root directory of this project.
 3. Run ```nats-server``` in a terminal.
 4. Run the python files in the following order (all in different terminals):
+-      docker-compose -f docker-compose-monitoring.yml up -d
 -      python3 pretrain.py (wait till it ends and then run the others)
 -      after pretraining, to load data into redis, run python3 redis_manager.py load
 -      python3 run_detector.py

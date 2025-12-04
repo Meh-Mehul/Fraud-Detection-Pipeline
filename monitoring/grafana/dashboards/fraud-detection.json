@@ -1,0 +1,319 @@
+{
+  "dashboard": {
+    "title": "Fraud Detection Pipeline - Real-Time Monitoring",
+    "tags": ["fraud", "detection", "pipeline"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "type": "stat",
+        "title": "Transactions Processed (Total)",
+        "targets": [
+          {
+            "expr": "sum(fraud_transactions_total)",
+            "legendFormat": "Total"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+        "type": "stat",
+        "title": "Fraud Alerts (Last Hour)",
+        "targets": [
+          {
+            "expr": "sum(increase(fraud_alerts_total[1h]))",
+            "legendFormat": "Alerts"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 10, "color": "yellow"},
+                {"value": 50, "color": "red"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "type": "stat",
+        "title": "Current TPS",
+        "targets": [
+          {
+            "expr": "sum(rate(fraud_transactions_total[1m]))",
+            "legendFormat": "TPS"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "reqps",
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "blue"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "type": "stat",
+        "title": "ML Model Status",
+        "targets": [
+          {
+            "expr": "fraud_ml_model_status{model_type=\"main\"}",
+            "legendFormat": "Status"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "mappings": [
+              {"type": "value", "value": 1, "text": "✓ OK"},
+              {"type": "value", "value": 0, "text": "✗ DOWN"}
+            ],
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 1, "color": "green"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+        "type": "graph",
+        "title": "Transaction Processing Rate",
+        "targets": [
+          {
+            "expr": "rate(fraud_transactions_total{component=\"detector\"}[1m])",
+            "legendFormat": "Detector"
+          },
+          {
+            "expr": "rate(fraud_transactions_total{component=\"stats_updater\"}[1m])",
+            "legendFormat": "Stats Updater"
+          },
+          {
+            "expr": "rate(fraud_transactions_total{component=\"feedback\"}[1m])",
+            "legendFormat": "Feedback"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Transactions/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 6,
+        "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+        "type": "graph",
+        "title": "Fraud Alerts by Tier",
+        "targets": [
+          {
+            "expr": "rate(fraud_alerts_total{tier=\"tier1\"}[5m])",
+            "legendFormat": "Tier 1 (Critical)"
+          },
+          {
+            "expr": "rate(fraud_alerts_total{tier=\"tier2\"}[5m])",
+            "legendFormat": "Tier 2 (Score-Based)"
+          },
+          {
+            "expr": "rate(fraud_alerts_total{tier=\"tier3\"}[5m])",
+            "legendFormat": "Tier 3 (ML-Based)"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Alerts/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "gridPos": {"x": 0, "y": 12, "w": 8, "h": 8},
+        "type": "heatmap",
+        "title": "Risk Score Distribution",
+        "targets": [
+          {
+            "expr": "increase(fraud_risk_score_bucket[5m])",
+            "format": "heatmap",
+            "legendFormat": "{{le}}"
+          }
+        ],
+        "dataFormat": "tsbuckets"
+      },
+      {
+        "id": 8,
+        "gridPos": {"x": 8, "y": 12, "w": 8, "h": 8},
+        "type": "heatmap",
+        "title": "ML Score Distribution",
+        "targets": [
+          {
+            "expr": "increase(fraud_ml_score_bucket[5m])",
+            "format": "heatmap",
+            "legendFormat": "{{le}}"
+          }
+        ],
+        "dataFormat": "tsbuckets"
+      },
+      {
+        "id": 9,
+        "gridPos": {"x": 16, "y": 12, "w": 8, "h": 8},
+        "type": "piechart",
+        "title": "Top Fraud Patterns",
+        "targets": [
+          {
+            "expr": "topk(5, sum by (pattern) (increase(fraud_alerts_by_pattern[1h])))",
+            "legendFormat": "{{pattern}}"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+        "type": "graph",
+        "title": "Redis Operations Latency",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, rate(fraud_redis_operation_duration_seconds_bucket[5m]))",
+            "legendFormat": "p99 - {{operation}}"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(fraud_redis_operation_duration_seconds_bucket[5m]))",
+            "legendFormat": "p95 - {{operation}}"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(fraud_redis_operation_duration_seconds_bucket[5m]))",
+            "legendFormat": "p50 - {{operation}}"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Latency"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 11,
+        "gridPos": {"x": 12, "y": 20, "w": 12, "h": 6},
+        "type": "graph",
+        "title": "Redis Entity Counts",
+        "targets": [
+          {
+            "expr": "fraud_redis_entity_count{entity_type=\"customer\"}",
+            "legendFormat": "Customers"
+          },
+          {
+            "expr": "fraud_redis_entity_count{entity_type=\"merchant\"}",
+            "legendFormat": "Merchants"
+          },
+          {
+            "expr": "fraud_redis_entity_count{entity_type=\"category\"}",
+            "legendFormat": "Categories"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Count"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 12,
+        "gridPos": {"x": 0, "y": 26, "w": 12, "h": 6},
+        "type": "graph",
+        "title": "Model Training Progress",
+        "targets": [
+          {
+            "expr": "rate(fraud_model_training_samples_total{label=\"fraud\"}[5m])",
+            "legendFormat": "Fraud Samples/sec"
+          },
+          {
+            "expr": "rate(fraud_model_training_samples_total{label=\"legitimate\"}[5m])",
+            "legendFormat": "Legitimate Samples/sec"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Samples/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 13,
+        "gridPos": {"x": 12, "y": 26, "w": 12, "h": 6},
+        "type": "graph",
+        "title": "Report Generation",
+        "targets": [
+          {
+            "expr": "rate(fraud_reports_generated_total{status=\"success\"}[5m])",
+            "legendFormat": "Successful"
+          },
+          {
+            "expr": "rate(fraud_reports_generated_total{status=\"failure\"}[5m])",
+            "legendFormat": "Failed"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Reports/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 14,
+        "gridPos": {"x": 0, "y": 32, "w": 24, "h": 6},
+        "type": "table",
+        "title": "Pipeline Component Health",
+        "targets": [
+          {
+            "expr": "fraud_pipeline_uptime_seconds",
+            "format": "table",
+            "instant": true
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {},
+              "indexByName": {},
+              "renameByName": {
+                "component": "Component",
+                "Value": "Uptime (seconds)"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -17,6 +17,12 @@ from shared.schema import FeedBackSchema
 from shared import model_store
 from shared import redis_stats_store
 
+from shared.metrics import initialize_metrics, get_metrics_manager
+
+
+METRICS_PORT = 8003
+
+
 NATS_URI = "nats://localhost:4222"
 FEEDBACK_TOPIC = "fraud.feedback"
 
@@ -161,6 +167,9 @@ def feedback_train_and_update(trans_num, cc_num, amt, lat, long, merch_lat, merc
         print(f"❌ Redis stats update error on {trans_num}: {e}")
 
     return None
+
+
+metrics_manager = initialize_metrics("feedback", port=METRICS_PORT)
 
 
 # ───────────────────────────────────────────────
