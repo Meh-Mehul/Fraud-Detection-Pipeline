@@ -18,7 +18,7 @@ try:
         initialize_metrics,
         record_transaction,
         record_fraud_alert,
-        record_ml_score,
+        record_latency,  # Changed from record_ml_score
         get_metrics_manager
     )
     print("✅ Successfully imported metrics module")
@@ -49,10 +49,10 @@ def test_metrics_server():
         record_transaction("test")
         record_transaction("test")
         record_transaction("test")
-        record_fraud_alert(1, "TEST_PATTERN", 85.5, "test")
-        record_fraud_alert(2, "ANOTHER_PATTERN", 72.0, "test")
-        record_ml_score(75.0, True)
-        record_ml_score(82.5, True)
+        record_fraud_alert(tier="1", pattern="TEST_PATTERN", risk_score=85.5, component="test")
+        record_fraud_alert(tier="2", pattern="ANOTHER_PATTERN", risk_score=72.0, component="test")
+        record_latency("detector_total", 0.025)  # 25ms
+        record_latency("ml_inference", 0.015)    # 15ms
         print("   ✅ Metrics recorded successfully")
     except Exception as e:
         print(f"   ❌ Failed to record metrics: {e}")
@@ -69,7 +69,7 @@ def test_metrics_server():
             expected_metrics = [
                 'fraud_transactions_total',
                 'fraud_alerts_total',
-                'fraud_ml_score',
+                'fraud_latency_seconds',
             ]
             
             missing = []
@@ -107,6 +107,7 @@ def test_metrics_server():
         return False
     
     return True
+
 
 def test_prometheus_connection():
     """Test if Prometheus can connect"""
@@ -155,12 +156,13 @@ def test_prometheus_connection():
         print(f"   ❌ Error: {e}")
         return False
 
+
 def main():
     """Run all tests"""
     print("""
-╔════════════════════════════════════════════════════════════╗
+╔══════════════════════════════════════════════════════════╗
 ║         PROMETHEUS METRICS TEST SUITE                      ║
-╚════════════════════════════════════════════════════════════╝
+╚══════════════════════════════════════════════════════════╝
     """)
     
     # Run metrics server test
@@ -214,13 +216,14 @@ def main():
                     # Record some random metrics
                     record_transaction("test")
                     if i % 30 == 0:
-                        record_fraud_alert(1, "TEST_ALERT", 85.0, "test")
+                        record_fraud_alert(tier="1", pattern="TEST_ALERT", risk_score=85.0, component="test")
                     print(f"⏱️  Running... {i+1}s / 120s", end='\r')
         except KeyboardInterrupt:
-            print("\n\n⏹️  Stopped by user")
+            print("\n\nℹ️  Stopped by user")
     else:
         print("\n❌ Please fix the issues above and try again")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

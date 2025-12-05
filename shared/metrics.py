@@ -1,387 +1,357 @@
+# shared/metrics.py
 """
-Prometheus Metrics Integration for Fraud Detection Pipeline
-Provides metrics collection and HTTP server for Prometheus scraping
+Enhanced Prometheus metrics for fraud detection pipeline
+Tracks: latency, model performance, alerts, throughput
 """
-import time
+
 from prometheus_client import (
     Counter, Histogram, Gauge, Summary,
-    CollectorRegistry, start_http_server, generate_latest
+    start_http_server, REGISTRY
 )
-from contextlib import contextmanager
-import threading
+import time
+from typing import Optional
+from collections import deque
+from datetime import datetime
 
-# Global registry for metrics
-_registry = CollectorRegistry()
-_metrics_manager = None
-_http_server_started = False
-_server_lock = threading.Lock()
 
 # ============================================================================
 # METRIC DEFINITIONS
 # ============================================================================
 
-# Transaction counters
+# Transaction Processing
 transactions_total = Counter(
     'fraud_transactions_total',
-    'Total number of transactions processed',
-    ['component'],
-    registry=_registry
+    'Total transactions processed',
+    ['component']
 )
 
-# Fraud alert counters
+# Latency Metrics
+latency_seconds = Histogram(
+    'fraud_latency_seconds',
+    'Processing latency in seconds',
+    ['stage'],
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+)
+
+# Alert Metrics
 alerts_total = Counter(
     'fraud_alerts_total',
-    'Total number of fraud alerts generated',
-    ['tier', 'component'],
-    registry=_registry
+    'Total fraud alerts generated',
+    ['tier', 'pattern']
 )
 
-alerts_by_pattern = Counter(
-    'fraud_alerts_by_pattern',
-    'Fraud alerts by pattern type',
-    ['pattern', 'tier'],
-    registry=_registry
+# Model Performance Metrics (from feedback)
+model_f1_score = Gauge(
+    'fraud_model_f1_score',
+    'Model F1 score (sliding window)'
 )
 
-# Risk score distribution
-risk_score_histogram = Histogram(
-    'fraud_risk_score',
-    'Distribution of fraud risk scores',
-    ['component'],
-    buckets=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100],
-    registry=_registry
+model_precision = Gauge(
+    'fraud_model_precision',
+    'Model precision (sliding window)'
 )
 
-# ML model metrics
-ml_score_histogram = Histogram(
-    'fraud_ml_score',
-    'Distribution of ML fraud scores',
-    buckets=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100],
-    registry=_registry
+model_recall = Gauge(
+    'fraud_model_recall',
+    'Model recall (sliding window)'
 )
 
-ml_model_status = Gauge(
-    'fraud_ml_model_status',
-    'ML model availability status (1=available, 0=unavailable)',
-    ['model_type'],
-    registry=_registry
+model_accuracy = Gauge(
+    'fraud_model_accuracy',
+    'Model accuracy (sliding window)'
 )
 
-# Model training metrics
+# Model Update Tracking
+model_updates_total = Counter(
+    'fraud_model_updates_total',
+    'Total model updates/saves'
+)
+
 model_training_samples = Counter(
     'fraud_model_training_samples_total',
-    'Total number of training samples processed',
-    ['label'],
-    registry=_registry
+    'Training samples processed',
+    ['label']  # fraud or legitimate
 )
 
-model_updates = Counter(
-    'fraud_model_updates_total',
-    'Total number of model updates',
-    ['component'],
-    registry=_registry
+model_last_update_timestamp = Gauge(
+    'fraud_model_last_update_timestamp',
+    'Unix timestamp of last model update'
 )
 
-# Redis operations
+# Model Status
+model_status = Gauge(
+    'fraud_ml_model_status',
+    'ML model availability (1=available, 0=unavailable)',
+    ['model_type']
+)
+
+# Redis Operations
 redis_operation_duration = Histogram(
     'fraud_redis_operation_duration_seconds',
-    'Duration of Redis operations',
+    'Redis operation latency',
     ['operation', 'entity_type'],
-    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
-    registry=_registry
-)
-
-redis_operation_errors = Counter(
-    'fraud_redis_operation_errors_total',
-    'Total Redis operation errors',
-    ['operation', 'entity_type'],
-    registry=_registry
+    buckets=[0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]
 )
 
 redis_entity_count = Gauge(
     'fraud_redis_entity_count',
-    'Number of entities stored in Redis',
-    ['entity_type'],
-    registry=_registry
+    'Number of entities in Redis',
+    ['entity_type']
 )
 
 redis_connection_status = Gauge(
     'fraud_redis_connection_status',
-    'Redis connection status (1=connected, 0=disconnected)',
-    registry=_registry
+    'Redis connection status (1=connected, 0=disconnected)'
 )
 
-# Report generation metrics
-reports_generated = Counter(
-    'fraud_reports_generated_total',
-    'Total fraud reports generated',
-    ['status', 'tier'],
-    registry=_registry
-)
-
-report_generation_duration = Histogram(
-    'fraud_report_generation_duration_seconds',
-    'Time taken to generate reports',
-    buckets=[0.5, 1, 2, 5, 10, 30, 60],
-    registry=_registry
-)
-
-# Pipeline health metrics
-component_uptime = Gauge(
+# Component Health
+component_uptime_seconds = Gauge(
     'fraud_pipeline_uptime_seconds',
     'Component uptime in seconds',
-    ['component'],
-    registry=_registry
+    ['component']
 )
 
-component_errors = Counter(
-    'fraud_pipeline_errors_total',
+component_errors_total = Counter(
+    'fraud_component_errors_total',
     'Total errors by component',
-    ['component', 'error_type'],
-    registry=_registry
-)
-
-# Processing latency
-processing_duration = Histogram(
-    'fraud_processing_duration_seconds',
-    'Transaction processing duration',
-    ['component', 'stage'],
-    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0],
-    registry=_registry
+    ['component', 'error_type']
 )
 
 
 # ============================================================================
-# METRICS MANAGER CLASS
+# PERFORMANCE CALCULATOR (for F1, Precision, Recall)
+# ============================================================================
+
+class PerformanceCalculator:
+    """
+    Calculates model performance metrics using a sliding window
+    Tracks predictions vs ground truth from feedback loop
+    """
+    
+    def __init__(self, window_size: int = 1000):
+        self.window_size = window_size
+        self.predictions = deque(maxlen=window_size)
+        self.ground_truth = deque(maxlen=window_size)
+        
+        # Counters for current window
+        self.tp = 0  # True Positives
+        self.fp = 0  # False Positives
+        self.tn = 0  # True Negatives
+        self.fn = 0  # False Negatives
+        
+        self.last_update = time.time()
+    
+    def add_sample(self, prediction: int, actual: int):
+        """
+        Add a prediction-actual pair
+        prediction: 1 if alert, 0 if no alert
+        actual: 1 if fraud, 0 if legitimate
+        """
+        # If window is full, remove oldest sample's contribution
+        if len(self.predictions) == self.window_size:
+            old_pred = self.predictions[0]
+            old_actual = self.ground_truth[0]
+            self._remove_sample(old_pred, old_actual)
+        
+        # Add new sample
+        self.predictions.append(prediction)
+        self.ground_truth.append(actual)
+        self._add_sample(prediction, actual)
+        
+        # Update metrics every 10 samples
+        if len(self.predictions) % 10 == 0:
+            self.update_metrics()
+    
+    def _add_sample(self, pred: int, actual: int):
+        """Update confusion matrix counters"""
+        if pred == 1 and actual == 1:
+            self.tp += 1
+        elif pred == 1 and actual == 0:
+            self.fp += 1
+        elif pred == 0 and actual == 1:
+            self.fn += 1
+        elif pred == 0 and actual == 0:
+            self.tn += 1
+    
+    def _remove_sample(self, pred: int, actual: int):
+        """Remove oldest sample from confusion matrix"""
+        if pred == 1 and actual == 1:
+            self.tp -= 1
+        elif pred == 1 and actual == 0:
+            self.fp -= 1
+        elif pred == 0 and actual == 1:
+            self.fn -= 1
+        elif pred == 0 and actual == 0:
+            self.tn -= 1
+    
+    def update_metrics(self):
+        """Calculate and update Prometheus metrics"""
+        # Precision = TP / (TP + FP)
+        precision = self.tp / (self.tp + self.fp) if (self.tp + self.fp) > 0 else 0.0
+        
+        # Recall = TP / (TP + FN)
+        recall = self.tp / (self.tp + self.fn) if (self.tp + self.fn) > 0 else 0.0
+        
+        # F1 = 2 * (Precision * Recall) / (Precision + Recall)
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+        
+        # Accuracy = (TP + TN) / Total
+        total = self.tp + self.fp + self.tn + self.fn
+        accuracy = (self.tp + self.tn) / total if total > 0 else 0.0
+        
+        # Update Prometheus gauges
+        model_precision.set(precision)
+        model_recall.set(recall)
+        model_f1_score.set(f1)
+        model_accuracy.set(accuracy)
+        
+        self.last_update = time.time()
+    
+    def get_stats(self) -> dict:
+        """Get current performance statistics"""
+        return {
+            'tp': self.tp,
+            'fp': self.fp,
+            'tn': self.tn,
+            'fn': self.fn,
+            'window_size': len(self.predictions),
+            'precision': model_precision._value.get(),
+            'recall': model_recall._value.get(),
+            'f1': model_f1_score._value.get(),
+            'accuracy': model_accuracy._value.get()
+        }
+
+
+# ============================================================================
+# METRICS MANAGER
 # ============================================================================
 
 class MetricsManager:
-    """Manages metrics collection and HTTP server"""
+    """Central metrics management"""
     
-    def __init__(self, component_name: str, port: int = 8001):
+    def __init__(self, component_name: str, port: int):
         self.component_name = component_name
         self.port = port
         self.start_time = time.time()
+        self.performance_calc = PerformanceCalculator(window_size=1000)
         
-    def start_http_server(self):
-        """Start Prometheus HTTP server for metrics scraping"""
-        global _http_server_started
-        
-        with _server_lock:
-            if _http_server_started:
-                print(f"   ℹ️  Metrics server already running on port {self.port}")
-                return
-            
-            try:
-                # Start HTTP server in separate thread
-                start_http_server(self.port, registry=_registry)
-                _http_server_started = True
-                print(f"✅ Metrics server started on http://localhost:{self.port}/metrics")
-                print(f"   Component: {self.component_name}")
-            except OSError as e:
-                if "Address already in use" in str(e):
-                    print(f"⚠️  Port {self.port} already in use - metrics server not started")
-                    print(f"   This is normal if multiple processes share the same port")
-                else:
-                    print(f"❌ Failed to start metrics server: {e}")
-    
-    def record_error(self, error_type: str):
-        """Record an error"""
-        component_errors.labels(
-            component=self.component_name,
-            error_type=error_type
-        ).inc()
+        # Start Prometheus HTTP server
+        try:
+            start_http_server(port)
+            print(f"📊 Metrics server started on port {port}")
+        except OSError:
+            print(f"⚠️  Port {port} already in use - metrics endpoint already running")
     
     def update_component_uptime(self):
         """Update component uptime metric"""
         uptime = time.time() - self.start_time
-        component_uptime.labels(component=self.component_name).set(uptime)
+        component_uptime_seconds.labels(component=self.component_name).set(uptime)
     
-    def get_metrics_text(self):
-        """Get current metrics in Prometheus text format"""
-        return generate_latest(_registry).decode('utf-8')
+    def record_error(self, component: str, error_type: str):
+        """Record an error"""
+        component_errors_total.labels(
+            component=component,
+            error_type=error_type
+        ).inc()
+    
+    def add_performance_sample(self, prediction: int, actual: int):
+        """Add a prediction-actual pair for performance calculation"""
+        self.performance_calc.add_sample(prediction, actual)
+    
+    def get_performance_stats(self) -> dict:
+        """Get current performance statistics"""
+        return self.performance_calc.get_stats()
+
+
+# Global metrics manager instance
+_metrics_manager: Optional[MetricsManager] = None
 
 
 # ============================================================================
-# CONVENIENCE FUNCTIONS
+# PUBLIC API
 # ============================================================================
 
-def initialize_metrics(component_name: str, port: int = 8001) -> MetricsManager:
-    """
-    Initialize metrics for a component and start HTTP server
-    
-    Args:
-        component_name: Name of the component (detector, stats_updater, etc.)
-        port: Port for Prometheus HTTP server
-    
-    Returns:
-        MetricsManager instance
-    """
+def initialize_metrics(component_name: str, port: int) -> MetricsManager:
+    """Initialize metrics for a component"""
     global _metrics_manager
-    
     _metrics_manager = MetricsManager(component_name, port)
-    _metrics_manager.start_http_server()
-    
-    # Initialize component uptime
-    component_uptime.labels(component=component_name).set(0)
-    
     return _metrics_manager
 
 
-def get_metrics_manager() -> MetricsManager:
-    """Get the global metrics manager instance"""
+def get_metrics_manager() -> Optional[MetricsManager]:
+    """Get the global metrics manager"""
     return _metrics_manager
 
 
-# ============================================================================
-# METRIC RECORDING FUNCTIONS
-# ============================================================================
-
+# Transaction tracking
 def record_transaction(component: str):
     """Record a processed transaction"""
     transactions_total.labels(component=component).inc()
 
 
-def record_fraud_alert(tier: int, pattern: str, risk_score: float, component: str = "detector"):
+# Latency tracking
+def record_latency(stage: str, duration: float):
+    """Record latency for a processing stage"""
+    latency_seconds.labels(stage=stage).observe(duration)
+
+
+# Alert tracking
+def record_fraud_alert(tier: str, pattern: str, risk_score: float, component: str):
     """Record a fraud alert"""
-    tier_label = f"tier{tier}"
-    
-    # Increment alert counters
-    alerts_total.labels(tier=tier_label, component=component).inc()
-    alerts_by_pattern.labels(pattern=pattern, tier=tier_label).inc()
-    
-    # Record risk score
-    risk_score_histogram.labels(component=component).observe(risk_score)
+    alerts_total.labels(tier=tier, pattern=pattern).inc()
 
 
-def record_ml_score(score: float, model_available: bool):
-    """Record ML model score and availability"""
-    ml_score_histogram.observe(score)
-    
-    # Update model status
-    ml_model_status.labels(model_type="main").set(1 if model_available else 0)
-    ml_model_status.labels(model_type="validator").set(1 if model_available else 0)
+# Model tracking
+def record_model_update():
+    """Record a model save/update"""
+    model_updates_total.inc()
+    model_last_update_timestamp.set(time.time())
 
 
-def record_model_training(label: str, component: str = "feedback"):
-    """Record model training sample"""
+def record_training_sample(label: str):
+    """Record a training sample (fraud or legitimate)"""
     model_training_samples.labels(label=label).inc()
 
 
-def record_model_update(component: str = "feedback"):
-    """Record model update/save"""
-    model_updates.labels(component=component).inc()
+def set_model_status(model_type: str, available: bool):
+    """Set model availability status"""
+    model_status.labels(model_type=model_type).set(1 if available else 0)
 
 
+# Redis tracking
 def record_redis_operation(operation: str, entity_type: str, duration: float, success: bool = True):
-    """Record Redis operation metrics"""
-    redis_operation_duration.labels(
-        operation=operation,
-        entity_type=entity_type
-    ).observe(duration)
-    
-    if not success:
-        redis_operation_errors.labels(
+    """Record a Redis operation"""
+    if success:
+        redis_operation_duration.labels(
             operation=operation,
             entity_type=entity_type
-        ).inc()
+        ).observe(duration)
 
 
 def update_redis_entity_counts(customers: int, merchants: int, categories: int):
-    """Update Redis entity count metrics"""
-    redis_entity_count.labels(entity_type="customer").set(customers)
-    redis_entity_count.labels(entity_type="merchant").set(merchants)
-    redis_entity_count.labels(entity_type="category").set(categories)
+    """Update Redis entity counts"""
+    redis_entity_count.labels(entity_type='customer').set(customers)
+    redis_entity_count.labels(entity_type='merchant').set(merchants)
+    redis_entity_count.labels(entity_type='category').set(categories)
 
 
 def set_redis_connection_status(connected: bool):
-    """Update Redis connection status"""
+    """Set Redis connection status"""
     redis_connection_status.set(1 if connected else 0)
 
 
-def record_report_generation(status: str, tier: int, duration: float):
-    """Record report generation metrics"""
-    tier_label = f"tier{tier}"
-    reports_generated.labels(status=status, tier=tier_label).inc()
-    report_generation_duration.observe(duration)
-
-
-def record_processing_duration(component: str, stage: str, duration: float):
-    """Record processing duration for a specific stage"""
-    processing_duration.labels(component=component, stage=stage).observe(duration)
-
-
-# ============================================================================
-# CONTEXT MANAGER FOR TIMING
-# ============================================================================
-
-@contextmanager
-def MetricsTimer(component: str, stage: str):
-    """
-    Context manager for timing operations
+# Context manager for timing
+class MetricsTimer:
+    """Context manager for timing operations"""
     
-    Usage:
-        with MetricsTimer("detector", "inference"):
-            # ... code to time ...
-    """
-    start = time.time()
-    try:
-        yield
-    finally:
-        duration = time.time() - start
-        record_processing_duration(component, stage, duration)
-
-
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-def get_current_metrics():
-    """Get current metrics as text (for debugging)"""
-    return generate_latest(_registry).decode('utf-8')
-
-
-def reset_metrics():
-    """Reset all metrics (for testing)"""
-    global _registry, _metrics_manager, _http_server_started
-    _registry = CollectorRegistry()
-    _metrics_manager = None
-    _http_server_started = False
-
-
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
-
-def metrics_health_check():
-    """Check if metrics system is healthy"""
-    try:
-        metrics_text = get_current_metrics()
-        return len(metrics_text) > 0
-    except Exception as e:
-        print(f"❌ Metrics health check failed: {e}")
-        return False
-
-
-if __name__ == "__main__":
-    # Test metrics server
-    print("Testing Prometheus metrics server...")
-    manager = initialize_metrics("test_component", port=8001)
+    def __init__(self, stage: str):
+        self.stage = stage
+        self.start_time = None
     
-    # Record some test metrics
-    record_transaction("test")
-    record_fraud_alert(1, "TEST_PATTERN", 85.5, "test")
-    record_ml_score(75.0, True)
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
     
-    print("\n📊 Current metrics:")
-    print(get_current_metrics()[:500])
-    print("\n✅ Metrics server running. Press Ctrl+C to stop.")
-    print(f"   Visit: http://localhost:8001/metrics")
-    
-    try:
-        # Keep server running
-        while True:
-            time.sleep(1)
-            manager.update_component_uptime()
-    except KeyboardInterrupt:
-        print("\n\n👋 Shutting down...")
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration = time.time() - self.start_time
+        record_latency(self.stage, duration)

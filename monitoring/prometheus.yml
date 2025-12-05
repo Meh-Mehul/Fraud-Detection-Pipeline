@@ -1,20 +1,10 @@
 # Prometheus Configuration for Fraud Detection Pipeline
-# Place this file in: ./monitoring/prometheus.yml
+# Cleaned - Only fraud detection components
 
 global:
-  scrape_interval: 15s
+  scrape_interval: 10s
   evaluation_interval: 15s
   scrape_timeout: 10s
-
-# Alertmanager configuration (optional)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets: ['alertmanager:9093']
-
-# Rule files (optional)
-# rule_files:
-#   - "alerts.yml"
 
 scrape_configs:
   # ========================================================================
@@ -29,7 +19,7 @@ scrape_configs:
           component: 'detector'
           environment: 'production'
     metrics_path: '/metrics'
-    scrape_interval: 10s
+    scrape_interval: 5s  # More frequent for latency tracking
 
   # Stats Updater component (port 8002)
   - job_name: 'fraud-stats-updater'
@@ -41,7 +31,7 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 10s
 
-  # Feedback component (port 8003)
+  # Feedback component (port 8003) - Model performance metrics
   - job_name: 'fraud-feedback'
     static_configs:
       - targets: ['host.docker.internal:8003']
@@ -49,7 +39,7 @@ scrape_configs:
           component: 'feedback'
           environment: 'production'
     metrics_path: '/metrics'
-    scrape_interval: 10s
+    scrape_interval: 5s  # More frequent for F1/Precision/Recall updates
 
   # Report Generator component (port 8004)
   - job_name: 'fraud-report-generator'
@@ -62,7 +52,7 @@ scrape_configs:
     scrape_interval: 10s
 
   # ========================================================================
-  # INFRASTRUCTURE MONITORING
+  # MINIMAL INFRASTRUCTURE MONITORING
   # ========================================================================
   
   # Prometheus self-monitoring
@@ -71,61 +61,3 @@ scrape_configs:
       - targets: ['localhost:9090']
         labels:
           component: 'prometheus'
-
-  # Redis metrics via Redis Exporter
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis-exporter:9121']
-        labels:
-          component: 'redis'
-          database: 'fraud-stats'
-
-  # NATS monitoring endpoint
-  - job_name: 'nats'
-    static_configs:
-      - targets: ['nats:8222']
-        labels:
-          component: 'nats'
-          messaging: 'jetstream'
-    metrics_path: '/varz'
-    scrape_interval: 15s
-
-  # System metrics via Node Exporter
-  - job_name: 'node-exporter'
-    static_configs:
-      - targets: ['node-exporter:9100']
-        labels:
-          component: 'system'
-          node: 'fraud-pipeline'
-
-  # ========================================================================
-  # SERVICE DISCOVERY (Optional - for dynamic environments)
-  # ========================================================================
-  
-  # Uncomment if running in Docker Swarm
-  # - job_name: 'docker-swarm'
-  #   dockerswarm_sd_configs:
-  #     - host: unix:///var/run/docker.sock
-  #       role: tasks
-  #   relabel_configs:
-  #     - source_labels: [__meta_dockerswarm_service_label_monitoring]
-  #       action: keep
-  #       regex: true
-
-  # Uncomment if running in Kubernetes
-  # - job_name: 'kubernetes-pods'
-  #   kubernetes_sd_configs:
-  #     - role: pod
-  #   relabel_configs:
-  #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-  #       action: keep
-  #       regex: true
-  #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-  #       action: replace
-  #       target_label: __metrics_path__
-  #       regex: (.+)
-  #     - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-  #       action: replace
-  #       regex: ([^:]+)(?::\d+)?;(\d+)
-  #       replacement: $1:$2
-  #       target_label: __address__

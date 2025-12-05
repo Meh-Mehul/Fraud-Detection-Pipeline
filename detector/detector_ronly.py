@@ -1,5 +1,6 @@
 """
-Instrumented Fraud Detector with Prometheus Metrics
+Enhanced Fraud Detector with Latency Tracking
+Measures: end-to-end latency, inference time, Redis latency
 """
 
 import pathway as pw
@@ -25,8 +26,8 @@ from shared.metrics import (
     initialize_metrics,
     record_transaction,
     record_fraud_alert,
-    record_ml_score,
-    MetricsTimer,
+    record_latency,
+    set_model_status,
     get_metrics_manager
 )
 
@@ -66,8 +67,7 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
     snapshot_interval_ms=10000
 )
 
-# Metrics configuration
-METRICS_PORT = 8001  # Different port for detector
+METRICS_PORT = 8001
 
 # Debug counter
 debug_counter = {"total": 0, "alerts": 0, "last_metric_update": 0}
@@ -76,10 +76,10 @@ debug_counter = {"total": 0, "alerts": 0, "last_metric_update": 0}
 redis_store = redis_stats_store.get_store()
 rules_loader = get_rules_loader()
 
-print("═══════════════════════════════════════════")
-print("   FRAUD DETECTOR — INSTRUMENTED")
-print("   (With Prometheus Metrics)")
-print("═══════════════════════════════════════════")
+print("╔═══════════════════════════════════════════╗")
+print("   FRAUD DETECTOR – ENHANCED METRICS")
+print("   (Latency + Performance Tracking)")
+print("╚═══════════════════════════════════════════╝")
 
 # Initialize metrics
 metrics_manager = initialize_metrics("detector", port=METRICS_PORT)
@@ -95,8 +95,10 @@ class ModelReader:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            print("🔄 [DETECTOR] model loaded at startup.")
+            set_model_status("main", True)
+            print("📄 [DETECTOR] model loaded at startup.")
         else:
+            set_model_status("main", False)
             print("⚠️  [DETECTOR] No model found at startup - will retry")
 
     def reload(self, force=False):
@@ -107,7 +109,8 @@ class ModelReader:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            print(f"🔄 [DETECTOR] model reloaded @ {datetime.utcnow().isoformat()}")
+            set_model_status("main", True)
+            print(f"📄 [DETECTOR] model reloaded @ {datetime.utcnow().isoformat()}")
         self._last = now
 
 model_reader = ModelReader()
@@ -133,21 +136,26 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
     except:
         return 0.0
 
-# INSTRUMENTED INFERENCE UDF
+# ENHANCED INFERENCE UDF WITH LATENCY TRACKING
 @pw.udf
-def run_infer_with_metrics(
+def run_infer_with_latency(
     trans_num, cc_num, amt, lat, long, merch_lat, merch_long,
     unix_time, merchant, category, city, state,
     trans_date_trans_time, first, last, gender, street, zip,
     city_pop, job, dob
 ):
-    """Inference UDF with Prometheus metrics"""
+    """
+    Enhanced inference with detailed latency tracking:
+    - End-to-end latency (from message timestamp)
+    - Detector inference time
+    - Redis read latency
+    - ML model inference latency
+    """
     
-    inference_start = time.time()
+    # Start total processing timer
+    process_start = time.time()
     
     debug_counter["total"] += 1
-    
-    # Record transaction processed
     record_transaction("detector")
 
     # Lazy reload model
@@ -155,7 +163,6 @@ def run_infer_with_metrics(
         model_reader.reload(force=False)
     except Exception as e:
         print(f"❌ Model reload error: {e}")
-        metrics_manager.record_error("detector", "model_reload")
 
     # Compute hour
     try:
@@ -175,12 +182,13 @@ def run_infer_with_metrics(
     except:
         distance = 0.0
 
-    # Read Redis stats (with timing)
+    # Redis reads with latency tracking
     redis_start = time.time()
     cust = redis_store.get_customer_profile(cc_num)
     merch_stats = redis_store.get_merchant_profile(merchant)
     cat = redis_store.get_category_profile(category)
-    # Redis read duration tracked in redis_stats_store
+    redis_duration = time.time() - redis_start
+    record_latency("redis_read", redis_duration)
 
     # Build features
     z_amt = ((float(amt) - cust["avg_amt"]) / cust["std_amt"]) if cust["std_amt"] > 0 else 0.0
@@ -201,7 +209,7 @@ def run_infer_with_metrics(
         "n": float(min(cust["txn_count"], 1000)),
     }
 
-    # Run ML inference (with timing)
+    # ML inference with latency tracking
     ml_start = time.time()
     try:
         if model_reader.model_main is None or model_reader.model_validator is None:
@@ -218,12 +226,11 @@ def run_infer_with_metrics(
         ml_score = 0.0
         model_status = f"ERROR:{str(e)[:30]}"
         model_available = False
-        metrics_manager.record_error("detector", "ml_inference")
     
-    # Record ML metrics
-    record_ml_score(ml_score, model_available)
+    ml_duration = time.time() - ml_start
+    record_latency("ml_inference", ml_duration)
 
-    # Rules evaluation (with timing)
+    # Rules evaluation
     rules_start = time.time()
     is_alert, tier, confidence, reason_str = rules_loader.evaluate_transaction(
         z_amt=z_amt,
@@ -238,15 +245,13 @@ def run_infer_with_metrics(
         category=category,
         hour=hour
     )
+    rules_duration = time.time() - rules_start
+    record_latency("rules_evaluation", rules_duration)
 
-    # Record alert metrics
+    # Record alert
     if is_alert:
         debug_counter["alerts"] += 1
-        
-        # Extract primary pattern from reason string
         primary_pattern = reason_str.split('|')[0].split('(')[0] if reason_str else "UNKNOWN"
-        
-        # Record fraud alert with metrics
         record_fraud_alert(
             tier=tier,
             pattern=primary_pattern,
@@ -257,6 +262,10 @@ def run_infer_with_metrics(
         if debug_counter["alerts"] % 10 == 0:
             print(f"🚨 ALERT #{debug_counter['alerts']}: {trans_num} | T{tier} | {reason_str[:40]}")
     
+    # Total processing latency
+    total_duration = time.time() - process_start
+    record_latency("detector_total", total_duration)
+    
     # Update metrics periodically
     now = time.time()
     if now - debug_counter["last_metric_update"] > 5:
@@ -266,7 +275,7 @@ def run_infer_with_metrics(
     # Log progress
     if debug_counter["total"] % 1000 == 0:
         print(f"[DETECTOR] Processed: {debug_counter['total']:,} | Alerts: {debug_counter['alerts']}")
-        print(f"   📊 Metrics: http://localhost:{METRICS_PORT}/metrics")
+        print(f"   📊 Latency - Total: {total_duration*1000:.1f}ms | ML: {ml_duration*1000:.1f}ms | Redis: {redis_duration*1000:.1f}ms")
 
     # Return JSON result
     return json.dumps({
@@ -301,7 +310,14 @@ def run_infer_with_metrics(
         "merch_long": float(merch_long),
         "unix_time": int(unix_time),
         "distance": round(distance, 2),
-        "hour": hour
+        "hour": hour,
+        # Latency metadata
+        "latency_ms": {
+            "total": round(total_duration * 1000, 2),
+            "ml": round(ml_duration * 1000, 2),
+            "redis": round(redis_duration * 1000, 2),
+            "rules": round(rules_duration * 1000, 2)
+        }
     })
 
 @pw.udf
@@ -334,7 +350,7 @@ def run_detector():
         print("❌ Redis not available!")
         return
     
-    print("───────────────────────────────────────────")
+    print("─" * 43)
 
     tx = pw.io.nats.read(
         uri=NATS_URI,
@@ -352,7 +368,7 @@ def run_detector():
     )
 
     results = enriched.select(
-        alert_json=run_infer_with_metrics(
+        alert_json=run_infer_with_latency(
             pw.this.trans_num, pw.this.cc_num, pw.this.amt,
             pw.this.lat, pw.this.long,
             pw.this.merch_lat, pw.this.merch_long,
@@ -379,8 +395,9 @@ def run_detector():
         topic=ALERTS_TOPIC
     )
 
-    print("\n✓ Detector active with Prometheus metrics")
-    print(f"✓ Access metrics at: http://localhost:{METRICS_PORT}/metrics")
+    print("\n✓ Detector active with enhanced metrics")
+    print(f"✓ Metrics: http://localhost:{METRICS_PORT}/metrics")
+    print(f"✓ Tracking: Latency (total, ML, Redis), Alerts, Throughput")
     print()
 
     pw.run(persistence_config=CHECKPOINT_CONFIG)
