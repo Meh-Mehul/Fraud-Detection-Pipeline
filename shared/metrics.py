@@ -1,35 +1,35 @@
 # shared/metrics.py
 """
-Enhanced Prometheus metrics for fraud detection pipeline
-Tracks: latency, model performance, alerts, throughput
+Streamlined Prometheus metrics for fraud detection pipeline
+Tracks: pipeline latency, fraud alerts, model updates, model weight delta
 """
 
 from prometheus_client import (
-    Counter, Histogram, Gauge, Summary,
+    Counter, Histogram, Gauge,
     start_http_server, REGISTRY
 )
 import time
 from typing import Optional
 from collections import deque
-from datetime import datetime
 
 
 # ============================================================================
 # METRIC DEFINITIONS
 # ============================================================================
 
-# Transaction Processing
-transactions_total = Counter(
-    'fraud_transactions_total',
-    'Total transactions processed',
-    ['component']
+# Pipeline End-to-End Latency (Publisher→Detector, Detector→Report)
+pipeline_latency_seconds = Histogram(
+    'fraud_pipeline_latency_seconds',
+    'End-to-end pipeline latency in seconds',
+    ['stage'],  # publisher_to_detector, detector_to_report
+    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
 )
 
-# Latency Metrics
+# Internal Processing Latency (for debugging)
 latency_seconds = Histogram(
     'fraud_latency_seconds',
-    'Processing latency in seconds',
-    ['stage'],
+    'Internal processing latency in seconds',
+    ['stage'],  # detector_total, ml_inference, rules_evaluation
     buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
 )
 
@@ -38,6 +38,23 @@ alerts_total = Counter(
     'fraud_alerts_total',
     'Total fraud alerts generated',
     ['tier', 'pattern']
+)
+
+# Model Update Tracking
+model_updates_total = Counter(
+    'fraud_model_updates_total',
+    'Total model updates/saves'
+)
+
+model_last_update_timestamp = Gauge(
+    'fraud_model_last_update_timestamp',
+    'Unix timestamp of last model update'
+)
+
+# Model Weight Change Delta
+model_weight_delta = Gauge(
+    'fraud_model_weight_delta',
+    'Magnitude of model weight changes (0-1 normalized)'
 )
 
 # Model Performance Metrics (from feedback)
@@ -61,60 +78,10 @@ model_accuracy = Gauge(
     'Model accuracy (sliding window)'
 )
 
-# Model Update Tracking
-model_updates_total = Counter(
-    'fraud_model_updates_total',
-    'Total model updates/saves'
-)
-
 model_training_samples = Counter(
     'fraud_model_training_samples_total',
     'Training samples processed',
     ['label']  # fraud or legitimate
-)
-
-model_last_update_timestamp = Gauge(
-    'fraud_model_last_update_timestamp',
-    'Unix timestamp of last model update'
-)
-
-# Model Status
-model_status = Gauge(
-    'fraud_ml_model_status',
-    'ML model availability (1=available, 0=unavailable)',
-    ['model_type']
-)
-
-# Redis Operations
-redis_operation_duration = Histogram(
-    'fraud_redis_operation_duration_seconds',
-    'Redis operation latency',
-    ['operation', 'entity_type'],
-    buckets=[0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1]
-)
-
-redis_entity_count = Gauge(
-    'fraud_redis_entity_count',
-    'Number of entities in Redis',
-    ['entity_type']
-)
-
-redis_connection_status = Gauge(
-    'fraud_redis_connection_status',
-    'Redis connection status (1=connected, 0=disconnected)'
-)
-
-# Component Health
-component_uptime_seconds = Gauge(
-    'fraud_pipeline_uptime_seconds',
-    'Component uptime in seconds',
-    ['component']
-)
-
-component_errors_total = Counter(
-    'fraud_component_errors_total',
-    'Total errors by component',
-    ['component', 'error_type']
 )
 
 
@@ -242,18 +209,6 @@ class MetricsManager:
         except OSError:
             print(f"⚠️  Port {port} already in use - metrics endpoint already running")
     
-    def update_component_uptime(self):
-        """Update component uptime metric"""
-        uptime = time.time() - self.start_time
-        component_uptime_seconds.labels(component=self.component_name).set(uptime)
-    
-    def record_error(self, component: str, error_type: str):
-        """Record an error"""
-        component_errors_total.labels(
-            component=component,
-            error_type=error_type
-        ).inc()
-    
     def add_performance_sample(self, prediction: int, actual: int):
         """Add a prediction-actual pair for performance calculation"""
         self.performance_calc.add_sample(prediction, actual)
@@ -283,22 +238,22 @@ def get_metrics_manager() -> Optional[MetricsManager]:
     return _metrics_manager
 
 
-# Transaction tracking
-def record_transaction(component: str):
-    """Record a processed transaction"""
-    transactions_total.labels(component=component).inc()
+# Pipeline latency tracking (end-to-end)
+def record_pipeline_latency(stage: str, duration: float):
+    """Record end-to-end pipeline latency (publisher_to_detector, detector_to_report)"""
+    pipeline_latency_seconds.labels(stage=stage).observe(duration)
 
 
-# Latency tracking
+# Internal latency tracking
 def record_latency(stage: str, duration: float):
-    """Record latency for a processing stage"""
+    """Record latency for an internal processing stage"""
     latency_seconds.labels(stage=stage).observe(duration)
 
 
 # Alert tracking
-def record_fraud_alert(tier: str, pattern: str, risk_score: float, component: str):
+def record_fraud_alert(tier, pattern: str, risk_score: float, component: str):
     """Record a fraud alert"""
-    alerts_total.labels(tier=tier, pattern=pattern).inc()
+    alerts_total.labels(tier=str(tier), pattern=pattern).inc()
 
 
 # Model tracking
@@ -313,39 +268,18 @@ def record_training_sample(label: str):
     model_training_samples.labels(label=label).inc()
 
 
-def set_model_status(model_type: str, available: bool):
-    """Set model availability status"""
-    model_status.labels(model_type=model_type).set(1 if available else 0)
-
-
-# Redis tracking
-def record_redis_operation(operation: str, entity_type: str, duration: float, success: bool = True):
-    """Record a Redis operation"""
-    if success:
-        redis_operation_duration.labels(
-            operation=operation,
-            entity_type=entity_type
-        ).observe(duration)
-
-
-def update_redis_entity_counts(customers: int, merchants: int, categories: int):
-    """Update Redis entity counts"""
-    redis_entity_count.labels(entity_type='customer').set(customers)
-    redis_entity_count.labels(entity_type='merchant').set(merchants)
-    redis_entity_count.labels(entity_type='category').set(categories)
-
-
-def set_redis_connection_status(connected: bool):
-    """Set Redis connection status"""
-    redis_connection_status.set(1 if connected else 0)
+def set_model_weight_delta(delta: float):
+    """Set the model weight change delta (0-1 normalized)"""
+    model_weight_delta.set(delta)
 
 
 # Context manager for timing
 class MetricsTimer:
     """Context manager for timing operations"""
     
-    def __init__(self, stage: str):
+    def __init__(self, stage: str, pipeline: bool = False):
         self.stage = stage
+        self.pipeline = pipeline
         self.start_time = None
     
     def __enter__(self):
@@ -354,4 +288,13 @@ class MetricsTimer:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         duration = time.time() - self.start_time
-        record_latency(self.stage, duration)
+        if self.pipeline:
+            record_pipeline_latency(self.stage, duration)
+        else:
+            record_latency(self.stage, duration)
+
+
+# Utility function to get current timestamp in ms
+def get_timestamp_ms() -> int:
+    """Get current Unix timestamp in milliseconds"""
+    return int(time.time() * 1000)

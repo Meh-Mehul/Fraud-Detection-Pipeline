@@ -21,6 +21,7 @@ from shared.metrics import (
     initialize_metrics,
     record_model_update,
     record_training_sample,
+    set_model_weight_delta,
     get_metrics_manager
 )
 
@@ -64,8 +65,9 @@ class EnhancedTrainer:
         self.legit_count = 0
         self.save_every = 50
         
-        # For performance calculation
+        # For performance calculation and weight delta
         self.last_performance_update = 0
+        self.previous_leaf_predictions = None
 
     def learn(self, feats: dict, label: int, actual_fraud: int):
         """
@@ -118,7 +120,24 @@ class EnhancedTrainer:
             print(f"❌ Training error: {e}")
 
     def save(self):
-        """Save model and record metrics"""
+        """Save model and record metrics including weight delta"""
+        # Calculate weight delta (using test predictions as proxy for weights)
+        try:
+            test_features = {
+                "amt": 100.0, "z_amt": 0.5, "amt_ratio": 1.2, "dist": 10.0,
+                "z_dist": 0.3, "hr": 12.0, "merch_risk": 0.02, "cat_risk": 0.01,
+                "online": 0.0, "late_night": 0.0, "fraud_history": 0.0, "n": 100.0
+            }
+            current_pred = self.model_main.predict_proba_one(test_features).get(1, 0.0)
+            
+            if self.previous_leaf_predictions is not None:
+                delta = abs(current_pred - self.previous_leaf_predictions)
+                set_model_weight_delta(delta)
+            
+            self.previous_leaf_predictions = current_pred
+        except Exception as e:
+            pass  # Ignore weight delta errors
+        
         success = model_store.save(self.model_main, self.model_validator)
         if success:
             record_model_update()

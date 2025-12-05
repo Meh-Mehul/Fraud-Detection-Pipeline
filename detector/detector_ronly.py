@@ -1,6 +1,6 @@
 """
-Enhanced Fraud Detector with Latency Tracking
-Measures: end-to-end latency, inference time, Redis latency
+Enhanced Fraud Detector with Pipeline Latency Tracking
+Measures: publisher→detector latency, detector processing time
 """
 
 import pathway as pw
@@ -24,14 +24,13 @@ from shared.rules_loader import get_rules_loader
 # METRICS INTEGRATION
 from shared.metrics import (
     initialize_metrics,
-    record_transaction,
     record_fraud_alert,
     record_latency,
-    set_model_status,
-    get_metrics_manager
+    record_pipeline_latency,
+    get_timestamp_ms
 )
 
-# Schema
+# Schema - now includes publish_timestamp_ms from publisher
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
@@ -54,6 +53,7 @@ class TransactionSchema(pw.Schema):
     unix_time: int = pw.column_definition(dtype=int)
     merch_lat: float = pw.column_definition(dtype=float)
     merch_long: float = pw.column_definition(dtype=float)
+    publish_timestamp_ms: int = pw.column_definition(dtype=int, default_value=0)
 
 # Config
 NATS_URI = "nats://localhost:4222"
@@ -70,15 +70,15 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
 METRICS_PORT = 8001
 
 # Debug counter
-debug_counter = {"total": 0, "alerts": 0, "last_metric_update": 0}
+debug_counter = {"total": 0, "alerts": 0}
 
 # Global stores
 redis_store = redis_stats_store.get_store()
 rules_loader = get_rules_loader()
 
 print("╔═══════════════════════════════════════════╗")
-print("   FRAUD DETECTOR – ENHANCED METRICS")
-print("   (Latency + Performance Tracking)")
+print("   FRAUD DETECTOR – PIPELINE LATENCY")
+print("   (Publisher→Detector + Detector→Report)")
 print("╚═══════════════════════════════════════════╝")
 
 # Initialize metrics
@@ -95,10 +95,8 @@ class ModelReader:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            set_model_status("main", True)
             print("📄 [DETECTOR] model loaded at startup.")
         else:
-            set_model_status("main", False)
             print("⚠️  [DETECTOR] No model found at startup - will retry")
 
     def reload(self, force=False):
@@ -109,7 +107,6 @@ class ModelReader:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            set_model_status("main", True)
             print(f"📄 [DETECTOR] model reloaded @ {datetime.utcnow().isoformat()}")
         self._last = now
 
@@ -136,27 +133,32 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
     except:
         return 0.0
 
-# ENHANCED INFERENCE UDF WITH LATENCY TRACKING
+# ENHANCED INFERENCE UDF WITH PIPELINE LATENCY TRACKING
 @pw.udf
 def run_infer_with_latency(
     trans_num, cc_num, amt, lat, long, merch_lat, merch_long,
     unix_time, merchant, category, city, state,
     trans_date_trans_time, first, last, gender, street, zip,
-    city_pop, job, dob
+    city_pop, job, dob, publish_timestamp_ms
 ):
     """
-    Enhanced inference with detailed latency tracking:
-    - End-to-end latency (from message timestamp)
-    - Detector inference time
-    - Redis read latency
-    - ML model inference latency
+    Enhanced inference with pipeline latency tracking:
+    - Publisher→Detector latency (from publish_timestamp_ms)
+    - Detector processing time
+    - Adds detector_timestamp_ms for Report to calculate Detector→Report
     """
     
-    # Start total processing timer
-    process_start = time.time()
+    # Start detector processing timer
+    detector_start = time.time()
+    detector_timestamp_ms = get_timestamp_ms()
+    
+    # Calculate Publisher→Detector latency
+    if publish_timestamp_ms and publish_timestamp_ms > 0:
+        pub_to_det_latency = (detector_timestamp_ms - publish_timestamp_ms) / 1000.0  # to seconds
+        if pub_to_det_latency > 0 and pub_to_det_latency < 60:  # sanity check
+            record_pipeline_latency("publisher_to_detector", pub_to_det_latency)
     
     debug_counter["total"] += 1
-    record_transaction("detector")
 
     # Lazy reload model
     try:
@@ -182,13 +184,10 @@ def run_infer_with_latency(
     except:
         distance = 0.0
 
-    # Redis reads with latency tracking
-    redis_start = time.time()
+    # Redis reads
     cust = redis_store.get_customer_profile(cc_num)
     merch_stats = redis_store.get_merchant_profile(merchant)
     cat = redis_store.get_category_profile(category)
-    redis_duration = time.time() - redis_start
-    record_latency("redis_read", redis_duration)
 
     # Build features
     z_amt = ((float(amt) - cust["avg_amt"]) / cust["std_amt"]) if cust["std_amt"] > 0 else 0.0
@@ -215,23 +214,19 @@ def run_infer_with_latency(
         if model_reader.model_main is None or model_reader.model_validator is None:
             ml_score = 0.0
             model_status = "NO_MODELS"
-            model_available = False
         else:
             p1 = model_reader.model_main.predict_proba_one(feats)
             p2 = model_reader.model_validator.predict_proba_one(feats)
             ml_score = (p1.get(1, 0.0) + p2.get(1, 0.0)) / 2 * 100.0
             model_status = "OK"
-            model_available = True
     except Exception as e:
         ml_score = 0.0
         model_status = f"ERROR:{str(e)[:30]}"
-        model_available = False
     
     ml_duration = time.time() - ml_start
     record_latency("ml_inference", ml_duration)
 
     # Rules evaluation
-    rules_start = time.time()
     is_alert, tier, confidence, reason_str = rules_loader.evaluate_transaction(
         z_amt=z_amt,
         amt=float(amt),
@@ -245,8 +240,6 @@ def run_infer_with_latency(
         category=category,
         hour=hour
     )
-    rules_duration = time.time() - rules_start
-    record_latency("rules_evaluation", rules_duration)
 
     # Record alert
     if is_alert:
@@ -262,22 +255,16 @@ def run_infer_with_latency(
         if debug_counter["alerts"] % 10 == 0:
             print(f"🚨 ALERT #{debug_counter['alerts']}: {trans_num} | T{tier} | {reason_str[:40]}")
     
-    # Total processing latency
-    total_duration = time.time() - process_start
+    # Total detector processing latency
+    total_duration = time.time() - detector_start
     record_latency("detector_total", total_duration)
-    
-    # Update metrics periodically
-    now = time.time()
-    if now - debug_counter["last_metric_update"] > 5:
-        metrics_manager.update_component_uptime()
-        debug_counter["last_metric_update"] = now
     
     # Log progress
     if debug_counter["total"] % 1000 == 0:
         print(f"[DETECTOR] Processed: {debug_counter['total']:,} | Alerts: {debug_counter['alerts']}")
-        print(f"   📊 Latency - Total: {total_duration*1000:.1f}ms | ML: {ml_duration*1000:.1f}ms | Redis: {redis_duration*1000:.1f}ms")
+        print(f"   📊 Latency - Detector: {total_duration*1000:.1f}ms | ML: {ml_duration*1000:.1f}ms")
 
-    # Return JSON result
+    # Return JSON result with detector_timestamp_ms for Report latency tracking
     return json.dumps({
         "is_alert": is_alert,
         "trans_num": str(trans_num),
@@ -311,12 +298,11 @@ def run_infer_with_latency(
         "unix_time": int(unix_time),
         "distance": round(distance, 2),
         "hour": hour,
-        # Latency metadata
+        # Timestamps for latency tracking
+        "detector_timestamp_ms": detector_timestamp_ms,
         "latency_ms": {
-            "total": round(total_duration * 1000, 2),
-            "ml": round(ml_duration * 1000, 2),
-            "redis": round(redis_duration * 1000, 2),
-            "rules": round(rules_duration * 1000, 2)
+            "detector_total": round(total_duration * 1000, 2),
+            "ml": round(ml_duration * 1000, 2)
         }
     })
 
@@ -376,7 +362,8 @@ def run_detector():
             pw.this.city, pw.this.state,
             pw.this.trans_date_trans_time, pw.this.first, pw.this.last,
             pw.this.gender, pw.this.street, pw.this.zip,
-            pw.this.city_pop, pw.this.job, pw.this.dob
+            pw.this.city_pop, pw.this.job, pw.this.dob,
+            pw.this.publish_timestamp_ms
         )
     )
 
@@ -395,9 +382,9 @@ def run_detector():
         topic=ALERTS_TOPIC
     )
 
-    print("\n✓ Detector active with enhanced metrics")
+    print("\n✓ Detector active with pipeline latency tracking")
     print(f"✓ Metrics: http://localhost:{METRICS_PORT}/metrics")
-    print(f"✓ Tracking: Latency (total, ML, Redis), Alerts, Throughput")
+    print(f"✓ Tracking: Publisher→Detector, Detector Total, ML Inference")
     print()
 
     pw.run(persistence_config=CHECKPOINT_CONFIG)

@@ -30,7 +30,7 @@ TEMP_DETECTOR_FILE = "./publisher/temp_det_stream.csv"
 NATS_URI = "nats://localhost:4222"
 FEEDBACK_TOPIC = "fraud.feedback"
 DETECTOR_TOPIC = "fraud.transactions"
-TARGET_TPS = 20
+TARGET_TPS = 75
 
 # ============================================================================
 # SCHEMAS

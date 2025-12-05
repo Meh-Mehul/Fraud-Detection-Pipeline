@@ -1,412 +1,274 @@
 {
-  "dashboard": {
-    "title": "Fraud Detection Pipeline - Enhanced Monitoring",
-    "tags": ["fraud", "detection", "ml", "latency"],
-    "timezone": "browser",
-    "refresh": "5s",
-    "time": {
-      "from": "now-15m",
-      "to": "now"
-    },
-    "panels": [
-      {
-        "id": 1,
-        "gridPos": {"x": 0, "y": 0, "w": 8, "h": 6},
-        "type": "graph",
-        "title": "🎯 Model Performance (F1, Precision, Recall)",
-        "targets": [
-          {
-            "expr": "fraud_model_f1_score",
-            "legendFormat": "F1 Score"
-          },
-          {
-            "expr": "fraud_model_precision",
-            "legendFormat": "Precision"
-          },
-          {
-            "expr": "fraud_model_recall",
-            "legendFormat": "Recall"
-          }
-        ],
-        "yaxes": [
-          {"format": "percentunit", "label": "Score", "min": 0, "max": 1},
-          {"format": "short"}
-        ],
-        "alert": {
-          "conditions": [
-            {
-              "evaluator": {"params": [0.7], "type": "lt"},
-              "operator": {"type": "and"},
-              "query": {"params": ["A", "5m", "now"]},
-              "reducer": {"params": [], "type": "avg"},
-              "type": "query"
-            }
-          ],
-          "name": "Low F1 Score Alert"
+  "uid": "fraud-detection-pipeline",
+  "title": "Fraud Detection Pipeline - Latency & Metrics",
+  "tags": [
+    "fraud",
+    "latency",
+    "alerts",
+    "model"
+  ],
+  "timezone": "browser",
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "type": "timeseries",
+      "title": "Pipeline Latency (Detector to Report) - p50",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(fraud_pipeline_latency_seconds_bucket{stage=\"detector_to_report\"}[1m]))",
+          "legendFormat": "p50 (median)",
+          "refId": "A"
         }
-      },
-      {
-        "id": 2,
-        "gridPos": {"x": 8, "y": 0, "w": 8, "h": 6},
-        "type": "graph",
-        "title": "⚡ End-to-End Latency (Detector Total)",
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.99, rate(fraud_latency_seconds_bucket{stage=\"detector_total\"}[1m]))",
-            "legendFormat": "p99"
-          },
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_latency_seconds_bucket{stage=\"detector_total\"}[1m]))",
-            "legendFormat": "p95"
-          },
-          {
-            "expr": "histogram_quantile(0.50, rate(fraud_latency_seconds_bucket{stage=\"detector_total\"}[1m]))",
-            "legendFormat": "p50"
-          }
-        ],
-        "yaxes": [
-          {"format": "s", "label": "Latency"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 3,
-        "gridPos": {"x": 16, "y": 0, "w": 8, "h": 6},
-        "type": "graph",
-        "title": "🚨 Alerts by Tier (Rate)",
-        "targets": [
-          {
-            "expr": "sum(rate(fraud_alerts_total{tier=\"tier1\"}[1m]))",
-            "legendFormat": "Tier 1 (Critical)"
-          },
-          {
-            "expr": "sum(rate(fraud_alerts_total{tier=\"tier2\"}[1m]))",
-            "legendFormat": "Tier 2 (Score-Based)"
-          },
-          {
-            "expr": "sum(rate(fraud_alerts_total{tier=\"tier3\"}[1m]))",
-            "legendFormat": "Tier 3 (ML-Based)"
-          }
-        ],
-        "yaxes": [
-          {"format": "short", "label": "Alerts/sec"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 4,
-        "gridPos": {"x": 0, "y": 6, "w": 6, "h": 4},
-        "type": "stat",
-        "title": "Model F1 Score",
-        "targets": [
-          {
-            "expr": "fraud_model_f1_score",
-            "legendFormat": "F1"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit",
-            "decimals": 3,
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 0.6, "color": "yellow"},
-                {"value": 0.8, "color": "green"}
-              ]
-            }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20
           }
         }
-      },
-      {
-        "id": 5,
-        "gridPos": {"x": 6, "y": 6, "w": 6, "h": 4},
-        "type": "stat",
-        "title": "Model Precision",
-        "targets": [
-          {
-            "expr": "fraud_model_precision",
-            "legendFormat": "Precision"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit",
-            "decimals": 3,
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 0.7, "color": "yellow"},
-                {"value": 0.85, "color": "green"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 6,
-        "gridPos": {"x": 12, "y": 6, "w": 6, "h": 4},
-        "type": "stat",
-        "title": "Model Recall",
-        "targets": [
-          {
-            "expr": "fraud_model_recall",
-            "legendFormat": "Recall"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit",
-            "decimals": 3,
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 0.6, "color": "yellow"},
-                {"value": 0.8, "color": "green"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 7,
-        "gridPos": {"x": 18, "y": 6, "w": 6, "h": 4},
-        "type": "stat",
-        "title": "Total Alerts (Last Hour)",
-        "targets": [
-          {
-            "expr": "sum(increase(fraud_alerts_total[1h]))",
-            "legendFormat": "Alerts"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": null, "color": "green"},
-                {"value": 50, "color": "yellow"},
-                {"value": 200, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 8,
-        "gridPos": {"x": 0, "y": 10, "w": 12, "h": 6},
-        "type": "graph",
-        "title": "⏱️ Latency Breakdown by Stage",
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_latency_seconds_bucket{stage=\"ml_inference\"}[1m]))",
-            "legendFormat": "ML Inference (p95)"
-          },
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_latency_seconds_bucket{stage=\"redis_read\"}[1m]))",
-            "legendFormat": "Redis Read (p95)"
-          },
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_latency_seconds_bucket{stage=\"rules_evaluation\"}[1m]))",
-            "legendFormat": "Rules Eval (p95)"
-          }
-        ],
-        "yaxes": [
-          {"format": "s", "label": "Latency"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 9,
-        "gridPos": {"x": 12, "y": 10, "w": 12, "h": 6},
-        "type": "graph",
-        "title": "🔄 Model Update Frequency",
-        "targets": [
-          {
-            "expr": "rate(fraud_model_updates_total[5m]) * 3600",
-            "legendFormat": "Model Saves/Hour"
-          },
-          {
-            "expr": "rate(fraud_model_training_samples_total{label=\"fraud\"}[1m]) * 60",
-            "legendFormat": "Fraud Samples/Min"
-          },
-          {
-            "expr": "rate(fraud_model_training_samples_total{label=\"legitimate\"}[1m]) * 60",
-            "legendFormat": "Legit Samples/Min"
-          }
-        ],
-        "yaxes": [
-          {"format": "short", "label": "Rate"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 10,
-        "gridPos": {"x": 0, "y": 16, "w": 8, "h": 4},
-        "type": "stat",
-        "title": "Avg Detector Latency (p95)",
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_latency_seconds_bucket{stage=\"detector_total\"}[5m])) * 1000",
-            "legendFormat": "p95 Latency"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "ms",
-            "decimals": 1,
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": null, "color": "green"},
-                {"value": 50, "color": "yellow"},
-                {"value": 100, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 11,
-        "gridPos": {"x": 8, "y": 16, "w": 8, "h": 4},
-        "type": "stat",
-        "title": "Model Last Updated",
-        "targets": [
-          {
-            "expr": "time() - fraud_model_last_update_timestamp",
-            "legendFormat": "Seconds Ago"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s",
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": null, "color": "green"},
-                {"value": 300, "color": "yellow"},
-                {"value": 600, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 12,
-        "gridPos": {"x": 16, "y": 16, "w": 8, "h": 4},
-        "type": "stat",
-        "title": "Current TPS",
-        "targets": [
-          {
-            "expr": "sum(rate(fraud_transactions_total[1m]))",
-            "legendFormat": "TPS"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "reqps",
-            "color": {"mode": "thresholds"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": null, "color": "blue"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 13,
-        "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
-        "type": "graph",
-        "title": "📊 Training Sample Distribution",
-        "targets": [
-          {
-            "expr": "fraud_model_training_samples_total{label=\"fraud\"}",
-            "legendFormat": "Fraud Samples"
-          },
-          {
-            "expr": "fraud_model_training_samples_total{label=\"legitimate\"}",
-            "legendFormat": "Legitimate Samples"
-          }
-        ],
-        "yaxes": [
-          {"format": "short", "label": "Samples"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 14,
-        "gridPos": {"x": 12, "y": 20, "w": 12, "h": 6},
-        "type": "graph",
-        "title": "🔍 Redis Operation Latency (p95)",
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_redis_operation_duration_seconds_bucket{operation=\"get\"}[1m]))",
-            "legendFormat": "Get (p95)"
-          },
-          {
-            "expr": "histogram_quantile(0.95, rate(fraud_redis_operation_duration_seconds_bucket{operation=\"update\"}[1m]))",
-            "legendFormat": "Update (p95)"
-          }
-        ],
-        "yaxes": [
-          {"format": "s", "label": "Latency"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 15,
-        "gridPos": {"x": 0, "y": 26, "w": 24, "h": 6},
-        "type": "graph",
-        "title": "🎯 Top Fraud Patterns (Last Hour)",
-        "targets": [
-          {
-            "expr": "topk(5, sum by (pattern) (increase(fraud_alerts_total[1h])))",
-            "legendFormat": "{{pattern}}"
-          }
-        ],
-        "yaxes": [
-          {"format": "short", "label": "Alert Count"},
-          {"format": "short"}
-        ]
-      },
-      {
-        "id": 16,
-        "gridPos": {"x": 0, "y": 32, "w": 24, "h": 6},
-        "type": "table",
-        "title": "Pipeline Component Health",
-        "targets": [
-          {
-            "expr": "fraud_pipeline_uptime_seconds",
-            "format": "table",
-            "instant": true
-          }
-        ],
-        "transformations": [
-          {
-            "id": "organize",
-            "options": {
-              "excludeByName": {},
-              "indexByName": {},
-              "renameByName": {
-                "component": "Component",
-                "Value": "Uptime (seconds)"
-              }
-            }
-          }
-        ]
       }
-    ]
-  }
+    },
+    {
+      "id": 2,
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "type": "timeseries",
+      "title": "Fraud Alerts by Tier",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(fraud_alerts_total{tier=\"1\"}[1m])) * 60",
+          "legendFormat": "Tier 1 (Critical)",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(fraud_alerts_total{tier=\"2\"}[1m])) * 60",
+          "legendFormat": "Tier 2 (Score-Based)",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(fraud_alerts_total{tier=\"3\"}[1m])) * 60",
+          "legendFormat": "Tier 3 (ML-Based)",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 6,
+        "h": 6
+      },
+      "type": "timeseries",
+      "title": "Model Updates/Hour",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "rate(fraud_model_updates_total[5m]) * 3600",
+          "legendFormat": "Updates/Hour",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 30
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "gridPos": {
+        "x": 6,
+        "y": 8,
+        "w": 6,
+        "h": 6
+      },
+      "type": "gauge",
+      "title": "Model F1 Score (5m avg)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(max(fraud_model_f1_score)[5m:30s]) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 50,
+                "color": "yellow"
+              },
+              {
+                "value": 75,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 6,
+        "h": 6
+      },
+      "type": "stat",
+      "title": "Avg Latency (Last 5m)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(histogram_quantile(0.50, rate(fraud_pipeline_latency_seconds_bucket{stage=\"detector_to_report\"}[1m]))[5m:1m]) * 1000",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 1000,
+                "color": "yellow"
+              },
+              {
+                "value": 2000,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "gridPos": {
+        "x": 18,
+        "y": 8,
+        "w": 6,
+        "h": 6
+      },
+      "type": "stat",
+      "title": "Total Alerts (Last Hour)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(fraud_alerts_total[1h]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "locale",
+          "decimals": 0,
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 100,
+                "color": "yellow"
+              },
+              {
+                "value": 500,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    }
+  ]
 }

@@ -13,7 +13,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from shared.metrics import initialize_metrics, get_metrics_manager
+from shared.metrics import initialize_metrics, get_metrics_manager, record_pipeline_latency, get_timestamp_ms
 
 
 METRICS_PORT = 8004
@@ -663,8 +663,18 @@ def process_alert(alert_json: str) -> str:
     """Process fraud alert and generate report if needed"""
     
     try:
+        # Calculate Detector→Report latency
+        report_timestamp_ms = get_timestamp_ms()
+        
         # Parse JSON string
         alert_data = json.loads(alert_json)
+        
+        # Calculate Detector→Report latency from detector_timestamp_ms
+        detector_timestamp_ms = alert_data.get('detector_timestamp_ms', 0)
+        if detector_timestamp_ms and detector_timestamp_ms > 0:
+            det_to_report_latency = (report_timestamp_ms - detector_timestamp_ms) / 1000.0  # to seconds
+            if det_to_report_latency > 0 and det_to_report_latency < 60:  # sanity check
+                record_pipeline_latency("detector_to_report", det_to_report_latency)
         
         # Check if it's an alert
         if not alert_data.get('is_alert', False):
