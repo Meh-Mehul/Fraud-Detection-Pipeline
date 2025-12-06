@@ -76,7 +76,16 @@ wait_for_container() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 build_images() {
-    print_step "Building Docker images (no cache)..."
+    # Fast build with cache (for restart)
+    print_step "Building Docker images (cached)..."
+    cd "$SCRIPT_DIR"
+    docker-compose -f "$COMPOSE_FILE" build
+    print_success "Docker images built"
+}
+
+build_images_fresh() {
+    # Full rebuild without cache (for start)
+    print_step "Building Docker images (no cache - fresh)..."
     cd "$SCRIPT_DIR"
     docker-compose -f "$COMPOSE_FILE" build --no-cache
     print_success "Docker images built"
@@ -176,8 +185,8 @@ run_cleanup() {
 cmd_start() {
     print_header "STARTING (with pretrain)"
     
-    # 0. Build images
-    build_images
+    # 0. Build images (fresh, no cache)
+    build_images_fresh
     
     # 1. Stop any existing containers
     stop_all 2>/dev/null || true
