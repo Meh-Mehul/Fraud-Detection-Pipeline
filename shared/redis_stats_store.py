@@ -5,12 +5,13 @@ Replaces file-based stats_store with in-memory Redis storage.
 """
 import redis
 import json
+import os
 from pathlib import Path
 from typing import Dict, Any
 
-# Redis connection configuration
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
+# Redis connection configuration (supports Docker: REDIS_HOST=redis)
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = 0
 
 # Key prefixes for different entity types

@@ -6,6 +6,7 @@ This runs FIRST to initialize Redis and keep stats updated.
 import pathway as pw
 from pathlib import Path
 import sys
+import os
 import math
 from shared.metrics import initialize_metrics, get_metrics_manager
 
@@ -20,7 +21,7 @@ sys.path.append(str(ROOT))
 from shared.schema import TransactionSchema
 from shared import redis_stats_store
 
-NATS_URI = "nats://localhost:4222"
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 INPUT_TOPIC = "fraud.transactions"
 
 # Persistence config

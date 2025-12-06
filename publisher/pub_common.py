@@ -14,6 +14,7 @@ DETECTOR PUBLISHER:
 
 import time
 import threading
+import os
 from pathlib import Path
 import pathway as pw
 import sys
@@ -27,7 +28,7 @@ sys.path.append(str(ROOT))
 ORIGINAL_FILE = "fraudTrain.csv"
 TEMP_FEEDBACK_FILE = "./publisher/temp_feed_stream.csv"
 TEMP_DETECTOR_FILE = "./publisher/temp_det_stream.csv"
-NATS_URI = "nats://localhost:4222"
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 FEEDBACK_TOPIC = "fraud.feedback"
 DETECTOR_TOPIC = "fraud.transactions"
 TARGET_TPS = 25

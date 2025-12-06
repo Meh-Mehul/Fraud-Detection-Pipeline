@@ -44,7 +44,7 @@ except ImportError:
 # ----------------------------------------------------------------------------
 # NATS Configuration
 # ----------------------------------------------------------------------------
-NATS_URI = "nats://localhost:4222"
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 NATS_ALERTS_TOPIC = "fraud.alerts"
 NATS_REPORTS_TOPIC = "fraud.reports"
 

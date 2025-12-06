@@ -11,6 +11,7 @@ Usage:
 """
 
 import sys
+import os
 import json
 from pathlib import Path
 
@@ -19,6 +20,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.append(str(ROOT))
 
 from shared import redis_stats_store
+
+# Show which Redis we're connecting to
+print(f"🔗 Connecting to Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
 
 
 def load_from_json():

@@ -4,7 +4,7 @@ Measures: publisher→detector latency, detector processing time
 """
 
 import pathway as pw
-import math, json, time, sys
+import math, json, time, sys, os
 from datetime import datetime
 from pathlib import Path
 
@@ -56,7 +56,7 @@ class TransactionSchema(pw.Schema):
     publish_timestamp_ms: int = pw.column_definition(dtype=int, default_value=0)
 
 # Config
-NATS_URI = "nats://localhost:4222"
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 INPUT_TOPIC = "fraud.transactions"
 RESULTS_TOPIC = "fraud.results"
 ALERTS_TOPIC = "fraud.alerts"

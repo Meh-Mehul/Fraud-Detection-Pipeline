@@ -76,9 +76,9 @@ wait_for_container() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 build_images() {
-    print_step "Building Docker images..."
+    print_step "Building Docker images (no cache)..."
     cd "$SCRIPT_DIR"
-    docker-compose -f "$COMPOSE_FILE" build
+    docker-compose -f "$COMPOSE_FILE" build --no-cache
     print_success "Docker images built"
 }
 
@@ -129,7 +129,7 @@ start_pipeline_nodes() {
     print_step "Starting pipeline nodes..."
     cd "$SCRIPT_DIR"
     
-    docker-compose -f "$COMPOSE_FILE" up -d detector stats-updater feedback report publisher frontend
+    docker-compose -f "$COMPOSE_FILE" up -d detector stats-updater feedback report publisher frontend negative-collector
     
     sleep 5
     wait_for_container "fraud-detector"
@@ -138,6 +138,7 @@ start_pipeline_nodes() {
     wait_for_container "fraud-report"
     wait_for_container "fraud-publisher"
     wait_for_container "fraud-frontend"
+    wait_for_container "fraud-negative-collector"
     
     print_success "Pipeline nodes started"
 }
@@ -159,8 +160,11 @@ run_cleanup() {
     rm -f ./publisher/temp_*.csv 2>/dev/null || true
     # Clean reports
     rm -f ./fraud_reports/*.pdf ./fraud_reports/*.json 2>/dev/null || true
-    # Clean frontend state
-    rm -f ./review_stats.json ./frontend_queue.json ./negative_transactions.json 2>/dev/null || true
+    # Clean frontend state (delete and recreate as empty files for Docker mount)
+    rm -rf ./review_stats.json ./frontend_queue.json ./negative_transactions.json 2>/dev/null || true
+    echo '{}' > ./review_stats.json
+    echo '[]' > ./frontend_queue.json
+    echo '{"count": 0, "transactions": []}' > ./negative_transactions.json
     
     print_success "Cleanup complete"
 }
@@ -213,22 +217,29 @@ cmd_start() {
 cmd_restart() {
     print_header "RESTARTING (without pretrain)"
     
-    # 1. Stop existing containers (except infrastructure)
-    print_step "Stopping pipeline nodes..."
+    # 1. Stop ALL containers including infrastructure
+    print_step "Stopping all containers..."
     cd "$SCRIPT_DIR"
-    docker-compose -f "$COMPOSE_FILE" stop detector stats-updater feedback report publisher frontend 2>/dev/null || true
-    docker-compose -f "$COMPOSE_FILE" rm -f detector stats-updater feedback report publisher frontend 2>/dev/null || true
+    docker-compose -f "$COMPOSE_FILE" --profile pretrain --profile init down 2>/dev/null || true
     
-    # 2. Ensure infrastructure is running
+    # 2. Reset Prometheus and Grafana data for fresh metrics
+    print_step "Resetting Prometheus and Grafana data..."
+    docker volume rm fraud-detection-pipeline_prometheus-data 2>/dev/null || true
+    docker volume rm fraud-detection-pipeline_grafana-data 2>/dev/null || true
+    
+    # 3. Rebuild images to pick up code changes
+    build_images
+    
+    # 4. Start infrastructure fresh
     start_infrastructure
     
-    # 3. Run cleanup
+    # 5. Run cleanup
     run_cleanup
     
-    # 4. Load Redis stats
+    # 6. Load Redis stats
     load_redis_stats
     
-    # 5. Start pipeline nodes
+    # 7. Start pipeline nodes
     start_pipeline_nodes
     
     echo ""

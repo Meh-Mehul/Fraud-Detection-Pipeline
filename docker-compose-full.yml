@@ -107,6 +107,8 @@ services:
     command: python3 -u redis_manager.py load
     volumes:
       - ./pathway_persistence:/app/pathway_persistence
+    environment:
+      - REDIS_HOST=redis
     networks:
       - fraud-network
     depends_on:
@@ -228,12 +230,30 @@ services:
       - "8000:8000"
     volumes:
       - ./fraud_reports:/app/fraud_reports
+      - ./negative_transactions.json:/app/negative_transactions.json
     environment:
       - REDIS_HOST=redis
     networks:
       - fraud-network
     depends_on:
       - report
+    restart: unless-stopped
+
+  negative-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-negative-collector
+    command: python3 -u negative_collector.py
+    volumes:
+      - ./negative_transactions.json:/app/negative_transactions.json
+      - ./pathway_persistence:/app/pathway_persistence
+    environment:
+      - NATS_URI=nats://nats:4222
+    networks:
+      - fraud-network
+    depends_on:
+      - detector
     restart: unless-stopped
 
 networks:

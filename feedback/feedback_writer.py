@@ -5,6 +5,7 @@ Calculates: F1, Precision, Recall using sliding window
 """
 from pathlib import Path
 import sys
+import os
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
@@ -28,7 +29,7 @@ from shared.metrics import (
 
 METRICS_PORT = 8003
 
-NATS_URI = "nats://localhost:4222"
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 FEEDBACK_TOPIC = "fraud.feedback"
 
 PERSIST_DIR = Path("./pathway_persistence")

@@ -7,12 +7,13 @@ for false negative review in the frontend
 import pathway as pw
 import json
 import time
+import os
 from pathlib import Path
 from collections import deque
 import threading
 
 # Configuration
-NATS_URI = "nats://localhost:4222"
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 RESULTS_TOPIC = "fraud.results"
 OUTPUT_FILE = Path("./negative_transactions.json")
 MAX_TRANSACTIONS = 500

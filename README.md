@@ -12,92 +12,117 @@ We are yet to measure exact metrics but we are planning to improve the decision 
 ##### About online-learning
 For now, we are learning through the live-transaction's target variable and training our model (online) on basis of that, but in the final pipeline we are planning to have a feedback-based learning paradigm in which flagged fraud is sent to bank's fraud analysis team, which mark it as true or not, and the model learns on the basis of that decision.
 
+---
 
-### Steps to Run:
+## Quick Start (Docker - Recommended)
 
-#### 1. Initial Setup (First Time Only)
+The entire pipeline runs in Docker containers using `pipeline.sh`:
+
+### First Time Setup
+```bash
+# Start with pretrain (builds images, pretrains model, starts all services)
+./pipeline.sh start
+```
+This will:
+- Build all Docker images
+- Start infrastructure (Redis, NATS, Prometheus, Grafana)
+- Run model pretraining (~3-5 minutes)
+- Load Redis stats
+- Start all pipeline nodes (detector, feedback, report, stats-updater, publisher, frontend, negative-collector)
+
+### Restart (Skip Pretrain)
+```bash
+# Quick restart - uses existing trained model, resets metrics
+./pipeline.sh restart
+```
+This skips pretraining and uses the existing model from `pathway_persistence/`.
+
+### Stop Pipeline
+```bash
+./pipeline.sh stop
+```
+
+### View Logs
+```bash
+./pipeline.sh logs
+```
+
+### Check Status
+```bash
+./pipeline.sh status
+```
+
+---
+
+## Endpoints
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| **Frontend** | http://localhost:8000 | Fraud Investigation Center |
+| **Grafana** | http://localhost:3000 | Metrics Dashboard (admin/admin) |
+| **Prometheus** | http://localhost:9090 | Raw metrics |
+| **NATS** | localhost:4222 | Message broker |
+| **Redis** | localhost:6379 | Stats store |
+
+---
+
+## Pipeline Components
+
+| Component | Port | Description |
+|-----------|------|-------------|
+| `detector` | 8001 | Real-time fraud detection using ML + rules |
+| `stats-updater` | 8002 | Updates Redis stats from transactions |
+| `feedback` | 8003 | Model training from labeled data |
+| `report` | 8004 | PDF report generation for fraud alerts |
+| `publisher` | - | Streams transactions from CSV to NATS |
+| `frontend` | 8000 | Web UI for fraud investigation |
+| `negative-collector` | - | Collects non-alert transactions for false negative review |
+
+---
+
+## Frontend Features
+
+- **Fraud Alerts Tab**: Review detected fraud cases, mark as Fraud/Legitimate
+- **False Negative Review Tab**: Review transactions marked legitimate (catch missed frauds)
+- **Grafana Button**: Quick link to monitoring dashboard
+- **Auto-refresh**: Queue updates every 5 seconds
+
+---
+
+## Manual Setup (Development)
+
+If you prefer running components manually without Docker:
+
+### 1. Initial Setup
 ```bash
 pip install -r requirements.txt
 python3 pretrain.py  # Wait till it ends
 ```
 
-#### 2. Start Monitoring Stack (Fresh Start)
+### 2. Start Infrastructure
 ```bash
-# Stop any existing containers and reset data
-docker-compose -f docker-compose-monitoring.yml down
-docker volume rm fraud-detection-pipeline_prometheus-data 2>/dev/null
-docker volume rm fraud-detection-pipeline_grafana-data 2>/dev/null
-
-# Start fresh
 docker-compose -f docker-compose-monitoring.yml up -d
 ```
 
-#### 3. Clean Up Previous Run Data
-```bash
-./clean.sh
-```
-
-#### 4. Load Redis Stats
+### 3. Load Redis Stats
 ```bash
 python redis_manager.py load
 ```
 
-#### 5. Start Pipeline Components (Each in Separate Terminal)
+### 4. Start Components (Each in Separate Terminal)
 ```bash
 python run_detector.py
 python run_report.py
 python run_stats_updater.py
 python run_feedback.py
 python publisher/pub_common.py
-```
-
-#### 6. Start Frontend (Human Review Interface)
-```bash
 python frontend/main.py
 ```
-Open http://localhost:8000 for the Fraud Investigation Center
-
-#### 7. Access Grafana Dashboard
-Open http://localhost:3000 (default login: admin/admin)
 
 ---
 
-### Optional Components
+## Useful Commands
 
-#### Latency Monitor (Auto-Restart on High Latency)
-Monitors pipeline latency and auto-restarts if latency exceeds 10 seconds:
-```bash
-python latency_monitor.py
-```
-
-#### False Negative Collector (Review Missed Frauds)
-Collects transactions marked as "legitimate" for false negative review:
-```bash
-python run_negative_collector.py
-```
-Access via the **"False Negative Review"** tab in the frontend.
-
-
-### Quick Restart (After Stopping Pipeline)
-```bash
-# 1. Stop containers and reset Prometheus data
-docker-compose -f docker-compose-monitoring.yml down
-docker volume rm fraud-detection-pipeline_prometheus-data 2>/dev/null
-
-# 2. Restart containers
-docker-compose -f docker-compose-monitoring.yml up -d
-
-# 3. Clean checkpoints and temp files
-./clean.sh
-
-# 4. Reload Redis stats
-python redis_manager.py load
-
-# 5. Start all components again (each in separate terminal)
-```
-
-
-### Useful Commands
 ```bash
 # Check Redis stats
 python redis_manager.py stats
@@ -112,14 +137,36 @@ python redis_manager.py clear
 lsof -ti:8000 | xargs kill -9
 ```
 
+---
 
-### Frontend Features
-- **Fraud Alerts Tab**: Review detected fraud cases, mark as Fraud/Legitimate
-- **False Negative Review Tab**: Review transactions marked legitimate (catch missed frauds)
-- **Grafana Button**: Quick link to monitoring dashboard
-- **Auto-refresh**: Queue updates every 5 seconds
+## Architecture
 
+```
+fraudTrain.csv
+      │
+      ▼
+┌─────────────┐    NATS     ┌─────────────┐
+│  Publisher  │────────────▶│  Detector   │──────┐
+└─────────────┘             └─────────────┘      │
+                                  │              │
+                                  ▼              ▼
+                            ┌─────────────┐  ┌─────────────┐
+                            │ Stats Upd.  │  │   Report    │
+                            └─────────────┘  └─────────────┘
+                                  │              │
+                                  ▼              ▼
+                            ┌─────────────┐  ┌─────────────┐
+                            │   Redis     │  │ PDF Reports │
+                            └─────────────┘  └─────────────┘
+                                                 │
+                                                 ▼
+                                          ┌─────────────┐
+                                          │  Frontend   │
+                                          └─────────────┘
+```
 
-#### Sources:
-dataset from:
-https://www.kaggle.com/datasets/kartik2112/fraud-detection?resource=download&select=fraudTrain.csv
+---
+
+## Sources
+
+Dataset from: https://www.kaggle.com/datasets/kartik2112/fraud-detection?resource=download&select=fraudTrain.csv
