@@ -4,9 +4,9 @@ if __name__ == "__main__":
     try:
         run_publisher()
     except KeyboardInterrupt:
-        print("\n\n✓ Publisher stopped")
+        print("\n\nPublisher stopped")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         print("\nMake sure NATS server is running:")
         print("  nats-server")
         import traceback

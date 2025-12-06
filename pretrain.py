@@ -22,9 +22,7 @@ TRAIN_FILE = "fraudTrain.csv"
 TARGET_FRAUD = 3000      # Target ~3K fraud cases
 TARGET_LEGITIMATE = 9000  # Target ~9K legitimate cases
 
-print("═" * 70)
-print("  PRE-TRAINING MODELS ON HISTORICAL DATA (FAST MODE)")
-print("═" * 70)
+print("PRE-TRAINING MODELS ON HISTORICAL DATA (FAST MODE)")
 print(f"Training file: {TRAIN_FILE}")
 print(f"Target sample: {TARGET_FRAUD:,} frauds + {TARGET_LEGITIMATE:,} legitimate")
 print()
@@ -209,13 +207,11 @@ print(f"  Validator: {pred2}")
 print(f"  ML Score: {ml_score:.1f}%")
 
 print()
-print("═" * 70)
-print("  PRE-TRAINING COMPLETE!")
-print("═" * 70)
+print("PRE-TRAINING COMPLETE!")
 print()
-print(f"✓ Trained on {len(df):,} samples ({n_fraud:,} frauds, {n_legit:,} legitimate)")
-print(f"✓ Model is ready for deployment with baseline knowledge")
-print(f"✓ Continuous learning will improve it further during operation")
+print(f"Trained on {len(df):,} samples ({n_fraud:,} frauds, {n_legit:,} legitimate)")
+print(f"Model is ready for deployment with baseline knowledge")
+print(f"Continuous learning will improve it further during operation")
 print()
 print("Next steps:")
 print("  1. Run: bash startup_warm.sh")

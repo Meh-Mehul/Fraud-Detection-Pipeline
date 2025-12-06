@@ -97,12 +97,12 @@ def verify_fraud_column():
         header = f.readline().strip().split(",")
         
         if "is_fraud" not in header:
-            print("❌ ERROR: is_fraud column not found in CSV!")
+            print("ERROR: is_fraud column not found in CSV!")
             print(f"   Available columns: {header}")
             return False
         
         fraud_idx = header.index("is_fraud")
-        print(f"✓ Found is_fraud column at index {fraud_idx}")
+        print(f"Found is_fraud column at index {fraud_idx}")
         
         # Analyze class distribution
         fraud_count = 0
@@ -230,7 +230,7 @@ def run_feedback_publisher():
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=FEEDBACK_TOPIC, format="json")
     
-    print("✓ Feedback publisher running...\n")
+    print("Feedback publisher running...\n")
     pw.run()
 
 
@@ -303,7 +303,7 @@ def run_detector_publisher():
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=DETECTOR_TOPIC, format="json")
     
-    print("✓ Detector publisher running...\n")
+    print("Detector publisher running...\n")
     pw.run()
 
 
@@ -312,17 +312,15 @@ def run_detector_publisher():
 # ============================================================================
 
 def main():
-    print("═" * 70)
-    print("   COMBINED PUBLISHER - Feedback + Detector")
-    print("═" * 70)
-    print("\n🎯 This script runs TWO publishers concurrently:")
+    print("COMBINED PUBLISHER - Feedback + Detector")
+    print("\nThis script runs TWO publishers concurrently:")
     print("   1. FEEDBACK Publisher  → fraud.feedback (with is_fraud)")
     print("   2. DETECTOR Publisher  → fraud.transactions (without is_fraud)")
     print()
     
     # Verify data integrity
     if not verify_fraud_column():
-        print("\n❌ Exiting due to data issues")
+        print("\nExiting due to data issues")
         return
     
     print("\n" + "─" * 70)
@@ -338,7 +336,7 @@ def main():
     time.sleep(2)  # Small delay to avoid startup conflicts
     detector_process.start()
     
-    print("\n✅ Both publishers are now running!")
+    print("\nBoth publishers are now running!")
     print("   Press Ctrl+C to stop both publishers\n")
     
     try:
@@ -351,7 +349,7 @@ def main():
         detector_process.terminate()
         feedback_process.join()
         detector_process.join()
-        print("✓ Publishers stopped cleanly")
+        print("Publishers stopped cleanly")
 
 
 if __name__ == "__main__":

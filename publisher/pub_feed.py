@@ -30,12 +30,12 @@ def verify_fraud_column():
         header = f.readline().strip().split(",")
         
         if "is_fraud" not in header:
-            print("❌ ERROR: is_fraud column not found in CSV!")
+            print("ERROR: is_fraud column not found in CSV!")
             print(f"   Available columns: {header}")
             return False
         
         fraud_idx = header.index("is_fraud")
-        print(f"✓ Found is_fraud column at index {fraud_idx}")
+        print(f"Found is_fraud column at index {fraud_idx}")
         
         # Analyze class distribution
         fraud_count = 0
@@ -137,13 +137,11 @@ def stream_full_dataset(tps):
 
 
 def run_pub():
-    print("═══════════════════════════════════════════════════════════")
-    print("   FEEDBACK PUBLISHER (Ground Truth Labels - Both Classes) ")
-    print("═══════════════════════════════════════════════════════════")
+    print("FEEDBACK PUBLISHER (Ground Truth Labels - Both Classes)")
     
     # Verify fraud column exists and show distribution
     if not verify_fraud_column():
-        print("\n❌ Exiting due to data issues")
+        print("\nExiting due to data issues")
         return
     
     print()
@@ -162,7 +160,7 @@ def run_pub():
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=NATS_TOPIC, format="json")
     
-    print("✓ Pathway publisher running...\n")
+    print("Pathway publisher running...\n")
     pw.run()
 
 
