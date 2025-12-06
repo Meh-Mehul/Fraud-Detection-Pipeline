@@ -120,18 +120,18 @@ def verify_fraud_column():
         fraud_pct = (fraud_count / total * 100) if total > 0 else 0
         legit_pct = (legit_count / total * 100) if total > 0 else 0
         
-        print(f"\n📊 Dataset Class Distribution:")
+        print(f"\nDataset Class Distribution:")
         print(f"   Total samples: {total:,}")
         print(f"   Fraudulent:    {fraud_count:,} ({fraud_pct:.2f}%)")
         print(f"   Legitimate:    {legit_count:,} ({legit_pct:.2f}%)")
         print(f"   Class ratio:   1:{legit_count/fraud_count:.1f}" if fraud_count > 0 else "")
         
         if fraud_count == 0:
-            print("⚠️  WARNING: No fraud cases found in dataset!")
+            print("WARNING: No fraud cases found in dataset!")
             return False
         
         if fraud_pct < 0.1:
-            print(f"⚠️  WARNING: Very low fraud rate ({fraud_pct:.3f}%). Model may struggle.")
+            print(f"WARNING: Very low fraud rate ({fraud_pct:.3f}%). Model may struggle.")
         
         return True
 
@@ -162,11 +162,11 @@ def stream_feedback_data(tps):
     fraud_count = sum(1 for row in data if row.strip().split(",")[fraud_idx] == "1")
     legit_count = len(data) - fraud_count
     
-    print(f"\n📊 Feedback Stream Content:")
+    print(f"\nFeedback Stream Content:")
     print(f"   Total transactions: {len(data):,}")
     print(f"   Fraudulent:         {fraud_count:,} ({fraud_count/len(data)*100:.2f}%)")
     print(f"   Legitimate:         {legit_count:,} ({legit_count/len(data)*100:.2f}%)")
-    print(f"\n   ℹ️  Both classes are necessary for training:")
+    print(f"\n   Both classes are necessary for training:")
     print(f"      • Fraud samples teach the model what fraud looks like")
     print(f"      • Legitimate samples teach what normal behavior is")
     print(f"      • The model learns to distinguish between them")
@@ -181,8 +181,7 @@ def stream_feedback_data(tps):
     sent_fraud = 0
     sent_legit = 0
     
-    print(f"\n📤 [FEEDBACK] Streaming at {tps} TPS to topic: {FEEDBACK_TOPIC}")
-    print("=" * 70)
+    print(f"\n[FEEDBACK] Streaming at {tps} TPS to topic: {FEEDBACK_TOPIC}")
 
     while True:
         t0 = time.time()
@@ -215,7 +214,7 @@ def stream_feedback_data(tps):
 
 def run_feedback_publisher():
     """Run the feedback publisher process."""
-    print("\n🔵 Starting FEEDBACK Publisher...")
+    print("\nStarting FEEDBACK Publisher...")
     
     # Start streaming thread
     t = threading.Thread(target=stream_feedback_data, args=(TARGET_TPS,), daemon=True)
@@ -261,9 +260,8 @@ def stream_detector_data(tps):
     interval = 1.0 / tps
     idx = 0
 
-    print(f"\n📤 [DETECTOR] Streaming {len(data):,} transactions (no is_fraud column)")
+    print(f"\n[DETECTOR] Streaming {len(data):,} transactions (no is_fraud column)")
     print(f"   Topic: {DETECTOR_TOPIC}")
-    print("=" * 70)
 
     while True:
         t0 = time.time()
@@ -288,7 +286,7 @@ def stream_detector_data(tps):
 
 def run_detector_publisher():
     """Run the detector publisher process."""
-    print("\n🟢 Starting DETECTOR Publisher...")
+    print("\nStarting DETECTOR Publisher...")
     
     # Start streaming thread
     t = threading.Thread(target=stream_detector_data, args=(TARGET_TPS,), daemon=True)
@@ -323,9 +321,7 @@ def main():
         print("\nExiting due to data issues")
         return
     
-    print("\n" + "─" * 70)
-    print("   Starting both publishers in separate processes...")
-    print("─" * 70)
+    print("\nStarting both publishers in separate processes...")
     
     # Create separate processes for each publisher
     feedback_process = Process(target=run_feedback_publisher, name="FeedbackPublisher")
@@ -344,7 +340,7 @@ def main():
         feedback_process.join()
         detector_process.join()
     except KeyboardInterrupt:
-        print("\n\n⚠️  Shutting down publishers...")
+        print("\n\nShutting down publishers...")
         feedback_process.terminate()
         detector_process.terminate()
         feedback_process.join()
