@@ -35,6 +35,7 @@ app.add_middleware(
 REPORTS_DIR = Path("./fraud_reports")
 STATS_FILE = Path("./review_stats.json")
 QUEUE_FILE = Path("./frontend_queue.json")
+NEGATIVE_FILE = Path("./negative_transactions.json")
 MAX_QUEUE_SIZE = 10
 
 # Global state
@@ -339,7 +340,20 @@ async def root():
         </div>
     </div>
 
-    <div class="max-w-7xl mx-auto px-6 py-6">
+    <!-- Tab Navigation -->
+    <div class="max-w-7xl mx-auto px-6 pt-4">
+        <div class="flex gap-2 border-b border-gray-200">
+            <button id="tab-alerts" onclick="switchTab('alerts')" class="px-6 py-3 font-semibold text-red-600 border-b-2 border-red-600 bg-white rounded-t-lg">
+                🚨 Fraud Alerts
+            </button>
+            <button id="tab-negatives" onclick="switchTab('negatives')" class="px-6 py-3 font-semibold text-gray-500 hover:text-gray-700 border-b-2 border-transparent">
+                🔍 False Negative Review
+            </button>
+        </div>
+    </div>
+
+    <!-- Tab Content: Fraud Alerts (Original) -->
+    <div id="content-alerts" class="max-w-7xl mx-auto px-6 py-6">
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div class="lg:col-span-1 bg-white rounded-lg shadow-md border border-gray-200">
                 <div class="p-4 border-b border-gray-200 bg-gray-50">
@@ -577,6 +591,130 @@ async def root():
 </body>
 </html>
 """
+    
+    # Add second tab content (False Negative Review)
+    negative_tab_html = """
+    <!-- Tab Content: False Negative Review -->
+    <div id="content-negatives" class="max-w-7xl mx-auto px-6 py-6 hidden">
+        <div class="bg-white rounded-lg shadow-md border border-gray-200">
+            <div class="p-4 border-b border-gray-200 bg-yellow-50">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <h2 class="text-xl font-bold text-gray-900">False Negative Review</h2>
+                        <span class="px-3 py-1 bg-yellow-200 text-yellow-800 rounded-full text-sm font-semibold" id="negative-count">0</span>
+                    </div>
+                    <button onclick="fetchNegatives()" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 font-semibold">
+                        🔄 Refresh
+                    </button>
+                </div>
+                <p class="text-sm text-gray-600 mt-2">Review transactions marked as legitimate - they might be missed frauds (false negatives)</p>
+            </div>
+            <div class="p-4 max-h-[600px] overflow-y-auto">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-100 sticky top-0">
+                        <tr>
+                            <th class="p-2 text-left">Trans #</th>
+                            <th class="p-2 text-left">Amount</th>
+                            <th class="p-2 text-left">Merchant</th>
+                            <th class="p-2 text-left">Category</th>
+                            <th class="p-2 text-left">ML Score</th>
+                            <th class="p-2 text-left">Time</th>
+                            <th class="p-2 text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="negatives-table">
+                        <tr><td colspan="7" class="p-4 text-center text-gray-500">Loading negative transactions...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tab) {
+            const alertsTab = document.getElementById('tab-alerts');
+            const negativesTab = document.getElementById('tab-negatives');
+            const alertsContent = document.getElementById('content-alerts');
+            const negativesContent = document.getElementById('content-negatives');
+            
+            if (tab === 'alerts') {
+                alertsTab.className = 'px-6 py-3 font-semibold text-red-600 border-b-2 border-red-600 bg-white rounded-t-lg';
+                negativesTab.className = 'px-6 py-3 font-semibold text-gray-500 hover:text-gray-700 border-b-2 border-transparent';
+                alertsContent.classList.remove('hidden');
+                negativesContent.classList.add('hidden');
+            } else {
+                alertsTab.className = 'px-6 py-3 font-semibold text-gray-500 hover:text-gray-700 border-b-2 border-transparent';
+                negativesTab.className = 'px-6 py-3 font-semibold text-yellow-600 border-b-2 border-yellow-600 bg-white rounded-t-lg';
+                alertsContent.classList.add('hidden');
+                negativesContent.classList.remove('hidden');
+                fetchNegatives();
+            }
+        }
+        
+        async function fetchNegatives() {
+            try {
+                const response = await fetch('/api/negatives');
+                const data = await response.json();
+                
+                document.getElementById('negative-count').textContent = data.count || 0;
+                
+                const tbody = document.getElementById('negatives-table');
+                if (!data.transactions || data.transactions.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-gray-500">No negative transactions collected yet. Start the negative_collector.py script.</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = data.transactions.slice(0, 100).map(txn => `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="p-2 font-mono text-xs">${txn.trans_num}</td>
+                        <td class="p-2 font-bold">$${parseFloat(txn.amt).toFixed(2)}</td>
+                        <td class="p-2">${txn.merchant}</td>
+                        <td class="p-2">${txn.category}</td>
+                        <td class="p-2"><span class="px-2 py-1 rounded ${parseFloat(txn.ml_score) > 30 ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}">${parseFloat(txn.ml_score).toFixed(1)}%</span></td>
+                        <td class="p-2 text-xs text-gray-500">${txn.timestamp}</td>
+                        <td class="p-2 text-center">
+                            <button onclick="markNegativeAsFraud('${txn.trans_num}', '${txn.cc_num}')" class="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xs font-semibold">
+                                🚨 Fraud
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                console.error('Error fetching negatives:', error);
+            }
+        }
+        
+        async function markNegativeAsFraud(transNum, ccNum) {
+            if (!confirm('Mark this transaction as FRAUD? This will send feedback to train the model.')) return;
+            
+            try {
+                const response = await fetch('/api/negative-feedback', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        trans_num: transNum,
+                        cc_num: ccNum,
+                        is_fraud: 1
+                    })
+                });
+                
+                if (response.ok) {
+                    alert('✓ Marked as FALSE NEGATIVE - Feedback sent for training!');
+                    fetchNegatives();
+                }
+            } catch (error) {
+                console.error('Error submitting negative feedback:', error);
+            }
+        }
+    </script>
+"""
+    
+    # Insert the negative tab before </body>
+    html_content = html_content.replace('</body>', negative_tab_html + '</body>')
+    
     return HTMLResponse(content=html_content)
 
 
@@ -658,6 +796,54 @@ async def submit_feedback(feedback: FeedbackRequest):
         'message': 'Feedback recorded',
         'stats': review_stats
     }
+
+
+class NegativeFeedbackRequest(BaseModel):
+    trans_num: str
+    cc_num: str
+    is_fraud: int
+
+
+@app.get("/api/negatives")
+async def get_negatives():
+    """Get latest negative transactions for false negative review"""
+    if not NEGATIVE_FILE.exists():
+        return {'count': 0, 'transactions': [], 'message': 'No negative transactions collected yet'}
+    
+    try:
+        with open(NEGATIVE_FILE, 'r') as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        return {'count': 0, 'transactions': [], 'error': str(e)}
+
+
+@app.post("/api/negative-feedback")
+async def negative_feedback(feedback: NegativeFeedbackRequest):
+    """Submit feedback for a negative transaction (potential false negative)"""
+    import nats
+    import asyncio
+    
+    try:
+        nc = await nats.connect("nats://localhost:4222")
+        
+        feedback_data = {
+            "trans_num": feedback.trans_num,
+            "cc_num": feedback.cc_num,
+            "is_fraud": feedback.is_fraud,
+            "source": "negative_review",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        await nc.publish("fraud.feedback", json.dumps(feedback_data).encode())
+        await nc.close()
+        
+        label = "FRAUD (False Negative!)" if feedback.is_fraud else "LEGITIMATE"
+        print(f"✓ Negative Review: {feedback.trans_num} -> {label}")
+        
+        return {'success': True, 'message': f'Feedback recorded: {label}'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
 
 
 if __name__ == "__main__":

@@ -51,8 +51,31 @@ python run_feedback.py
 python publisher/pub_common.py
 ```
 
-#### 6. Access Grafana Dashboard
+#### 6. Start Frontend (Human Review Interface)
+```bash
+python frontend/main.py
+```
+Open http://localhost:8000 for the Fraud Investigation Center
+
+#### 7. Access Grafana Dashboard
 Open http://localhost:3000 (default login: admin/admin)
+
+---
+
+### Optional Components
+
+#### Latency Monitor (Auto-Restart on High Latency)
+Monitors pipeline latency and auto-restarts if latency exceeds 10 seconds:
+```bash
+python latency_monitor.py
+```
+
+#### False Negative Collector (Review Missed Frauds)
+Collects transactions marked as "legitimate" for false negative review:
+```bash
+python run_negative_collector.py
+```
+Access via the **"False Negative Review"** tab in the frontend.
 
 
 ### Quick Restart (After Stopping Pipeline)
@@ -84,7 +107,17 @@ python redis_manager.py export
 
 # Clear all Redis data
 python redis_manager.py clear
+
+# Free up port if in use
+lsof -ti:8000 | xargs kill -9
 ```
+
+
+### Frontend Features
+- **Fraud Alerts Tab**: Review detected fraud cases, mark as Fraud/Legitimate
+- **False Negative Review Tab**: Review transactions marked legitimate (catch missed frauds)
+- **Grafana Button**: Quick link to monitoring dashboard
+- **Auto-refresh**: Queue updates every 5 seconds
 
 
 #### Sources:
