@@ -1,0 +1,25 @@
+# Use Python 3.11 slim image
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt
+
+# Copy the entire project
+COPY . .
+
+# Create directories
+RUN mkdir -p /app/logs /app/pathway_persistence /app/fraud_reports
+
+# Default command (can be overridden in docker-compose)
+CMD ["python3", "-u", "-c", "print('Pipeline node ready')"]

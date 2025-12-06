@@ -74,7 +74,7 @@ def update_stats_redis(trans_num, cc_num, amt, lat, lon, merch_lat, merch_long, 
         
         return f"ok_{trans_num}"
     except Exception as e:
-        print(f"❌ Redis update error for {trans_num}: {e}")
+        print(f" Redis update error for {trans_num}: {e}")
         return f"error_{trans_num}"
 
 metrics_manager = initialize_metrics("stats_updater", port=METRICS_PORT)
@@ -90,15 +90,15 @@ def run_stats_node():
     # Initialize Redis - load from JSON if exists
     json_path = PERSIST_DIR / "stats_store.json"
     if json_path.exists():
-        print("📥 Loading initial stats from JSON into Redis...")
+        print(" Loading initial stats from JSON into Redis...")
         loaded = redis_store.load_from_json(str(json_path))
         summary = redis_store.get_stats_summary()
-        print(f"✓ Loaded {loaded} entities")
+        print(f" Loaded {loaded} entities")
         print(f"   Customers: {summary['customers']:,}")
         print(f"   Merchants: {summary['merchants']:,}")
         print(f"   Categories: {summary['categories']:,}")
     else:
-        print("⚠️  No existing stats.json - starting fresh")
+        print(" No existing stats.json - starting fresh")
     
     print()
     print("───────────────────────────────────────────")

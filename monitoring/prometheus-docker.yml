@@ -1,0 +1,62 @@
+# Prometheus Configuration for Fully Containerized Pipeline
+# Uses Docker service names instead of host.docker.internal
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # ========================================================================
+  # FRAUD DETECTION COMPONENTS (Docker containers)
+  # ========================================================================
+  
+  # Detector component (port 8001)
+  - job_name: 'fraud-detector'
+    static_configs:
+      - targets: ['detector:8001']
+        labels:
+          component: 'detector'
+          environment: 'production'
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  # Stats Updater component (port 8002)
+  - job_name: 'fraud-stats-updater'
+    static_configs:
+      - targets: ['stats-updater:8002']
+        labels:
+          component: 'stats_updater'
+          environment: 'production'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Feedback component (port 8003)
+  - job_name: 'fraud-feedback'
+    static_configs:
+      - targets: ['feedback:8003']
+        labels:
+          component: 'feedback'
+          environment: 'production'
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  # Report Generator component (port 8004)
+  - job_name: 'fraud-report-generator'
+    static_configs:
+      - targets: ['report:8004']
+        labels:
+          component: 'report_generator'
+          environment: 'production'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # ========================================================================
+  # INFRASTRUCTURE MONITORING
+  # ========================================================================
+  
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          component: 'prometheus'

@@ -1,0 +1,246 @@
+services:
+  # ==========================================================================
+  # INFRASTRUCTURE SERVICES
+  # ==========================================================================
+  
+  redis:
+    image: redis:7-alpine
+    container_name: fraud-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - fraud-network
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: fraud-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - fraud-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: fraud-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus-docker.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - fraud-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: fraud-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    restart: unless-stopped
+    networks:
+      - fraud-network
+    depends_on:
+      - prometheus
+
+  # ==========================================================================
+  # PRETRAIN SERVICE (runs once on start)
+  # ==========================================================================
+  
+  pretrain:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-pretrain
+    command: python3 -u pretrain.py
+    volumes:
+      - ./fraudTrain.csv:/app/fraudTrain.csv:ro
+      - ./pathway_persistence:/app/pathway_persistence
+    networks:
+      - fraud-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - pretrain
+
+  # ==========================================================================
+  # REDIS STATS LOADER (runs after pretrain)
+  # ==========================================================================
+  
+  redis-loader:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-redis-loader
+    command: python3 -u redis_manager.py load
+    volumes:
+      - ./pathway_persistence:/app/pathway_persistence
+    networks:
+      - fraud-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - init
+
+  # ==========================================================================
+  # PIPELINE NODES - Direct module execution (no run_*.py wrappers)
+  # ==========================================================================
+  
+  detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-detector
+    command: python3 -u -c "from detector.detector_ronly import run_detector; run_detector()"
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./pathway_persistence:/app/pathway_persistence
+      - ./logs:/app/logs
+    environment:
+      - NATS_URI=nats://nats:4222
+      - REDIS_HOST=redis
+    networks:
+      - fraud-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  stats-updater:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-stats-updater
+    command: python3 -u -c "from detector.detector_stats_upd import run_stats_node; run_stats_node()"
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./pathway_persistence:/app/pathway_persistence
+    environment:
+      - NATS_URI=nats://nats:4222
+      - REDIS_HOST=redis
+    networks:
+      - fraud-network
+    depends_on:
+      - detector
+    restart: unless-stopped
+
+  feedback:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-feedback
+    command: python3 -u -c "from feedback.feedback_writer import run_feedback_writer; run_feedback_writer()"
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./pathway_persistence:/app/pathway_persistence
+    environment:
+      - NATS_URI=nats://nats:4222
+      - REDIS_HOST=redis
+    networks:
+      - fraud-network
+    depends_on:
+      - detector
+    restart: unless-stopped
+
+  report:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-report
+    command: python3 -u -c "from report.pathway_nats_report import run_report_generator; run_report_generator()"
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./pathway_persistence:/app/pathway_persistence
+      - ./fraud_reports:/app/fraud_reports
+    environment:
+      - NATS_URI=nats://nats:4222
+      - REDIS_HOST=redis
+    networks:
+      - fraud-network
+    depends_on:
+      - detector
+    restart: unless-stopped
+
+  publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-publisher
+    command: python3 -u publisher/pub_common.py
+    volumes:
+      - ./fraudTrain.csv:/app/fraudTrain.csv:ro
+      - ./publisher:/app/publisher
+    environment:
+      - NATS_URI=nats://nats:4222
+    networks:
+      - fraud-network
+    depends_on:
+      - detector
+      - feedback
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: fraud-frontend
+    command: python3 -u frontend/main.py
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./fraud_reports:/app/fraud_reports
+    environment:
+      - REDIS_HOST=redis
+    networks:
+      - fraud-network
+    depends_on:
+      - report
+    restart: unless-stopped
+
+networks:
+  fraud-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:
