@@ -300,9 +300,11 @@ def run_infer_with_latency(
         "hour": hour,
         # Timestamps for latency tracking
         "detector_timestamp_ms": detector_timestamp_ms,
+        "publish_timestamp_ms": int(publish_timestamp_ms),  # Pass through for end-to-end latency
         "latency_ms": {
             "detector_total": round(total_duration * 1000, 2),
-            "ml": round(ml_duration * 1000, 2)
+            "ml": round(ml_duration * 1000, 2),
+            "publish_timestamp_ms": int(publish_timestamp_ms)  # Also include in latency object
         }
     })
 

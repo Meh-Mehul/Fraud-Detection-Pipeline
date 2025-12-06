@@ -9,7 +9,8 @@ from prometheus_client import (
     start_http_server, REGISTRY
 )
 import time
-from typing import Optional
+import math
+from typing import Optional, List, Tuple
 from collections import deque
 
 
@@ -83,6 +84,123 @@ model_training_samples = Counter(
     'Training samples processed',
     ['label']  # fraud or legitimate
 )
+
+# 1-Minute Weighted Moving Averages (recent values get more weight)
+model_f1_score_weighted_avg = Gauge(
+    'fraud_model_f1_score_weighted_avg',
+    'Model F1 score (1-min weighted moving avg, recent gets more weight)'
+)
+
+model_latency_weighted_avg = Gauge(
+    'fraud_latency_weighted_avg_seconds',
+    'Processing latency (1-min weighted moving avg, recent gets more weight)'
+)
+
+pipeline_latency_weighted_avg = Gauge(
+    'fraud_pipeline_latency_weighted_avg_seconds',
+    'Pipeline latency (1-min weighted moving avg, recent gets more weight)'
+)
+
+
+# ============================================================================
+# WEIGHTED MOVING AVERAGE (1-minute window, exponential decay)
+# ============================================================================
+
+class WeightedMovingAverage:
+    """
+    Calculates 1-minute weighted moving average with exponential decay.
+    Recent values get more weight (half-life of 15 seconds).
+    """
+    
+    def __init__(self, window_seconds: float = 60.0, half_life_seconds: float = 15.0):
+        self.window_seconds = window_seconds
+        self.half_life_seconds = half_life_seconds
+        # decay_rate = ln(2) / half_life, so weight = exp(-decay_rate * age)
+        self.decay_rate = math.log(2) / half_life_seconds
+        # Store (timestamp, value) pairs
+        self.samples: List[Tuple[float, float]] = []
+    
+    def add_sample(self, value: float, timestamp: float = None):
+        """Add a new sample with current or provided timestamp"""
+        if timestamp is None:
+            timestamp = time.time()
+        self.samples.append((timestamp, value))
+        # Prune old samples outside the window
+        self._prune_old_samples(timestamp)
+    
+    def _prune_old_samples(self, current_time: float):
+        """Remove samples older than the window"""
+        cutoff = current_time - self.window_seconds
+        self.samples = [(t, v) for t, v in self.samples if t >= cutoff]
+    
+    def get_weighted_average(self) -> float:
+        """
+        Calculate weighted average with exponential decay.
+        Weight = exp(-decay_rate * age_in_seconds)
+        More recent samples have higher weights.
+        """
+        if not self.samples:
+            return 0.0
+        
+        current_time = time.time()
+        self._prune_old_samples(current_time)
+        
+        if not self.samples:
+            return 0.0
+        
+        weighted_sum = 0.0
+        total_weight = 0.0
+        
+        for timestamp, value in self.samples:
+            age = current_time - timestamp
+            # Exponential decay: weight = e^(-decay_rate * age)
+            weight = math.exp(-self.decay_rate * age)
+            weighted_sum += weight * value
+            total_weight += weight
+        
+        return weighted_sum / total_weight if total_weight > 0 else 0.0
+    
+    def sample_count(self) -> int:
+        """Get number of samples in the window"""
+        current_time = time.time()
+        self._prune_old_samples(current_time)
+        return len(self.samples)
+
+
+# Singleton instances for weighted moving averages
+_f1_wma = WeightedMovingAverage(window_seconds=60.0, half_life_seconds=15.0)
+_latency_wma = WeightedMovingAverage(window_seconds=60.0, half_life_seconds=15.0)
+_pipeline_latency_wma = WeightedMovingAverage(window_seconds=60.0, half_life_seconds=15.0)
+
+
+def record_f1_weighted_sample(f1_value: float):
+    """Record an F1 score sample and update the weighted moving average gauge"""
+    _f1_wma.add_sample(f1_value)
+    model_f1_score_weighted_avg.set(_f1_wma.get_weighted_average())
+
+
+def record_latency_weighted_sample(latency_seconds: float):
+    """Record an internal latency sample and update the weighted moving average gauge"""
+    _latency_wma.add_sample(latency_seconds)
+    model_latency_weighted_avg.set(_latency_wma.get_weighted_average())
+
+
+def record_pipeline_latency_weighted_sample(latency_seconds: float):
+    """Record a pipeline latency sample and update the weighted moving average gauge"""
+    _pipeline_latency_wma.add_sample(latency_seconds)
+    pipeline_latency_weighted_avg.set(_pipeline_latency_wma.get_weighted_average())
+
+
+def get_weighted_averages() -> dict:
+    """Get current weighted moving averages"""
+    return {
+        'f1_weighted_avg': _f1_wma.get_weighted_average(),
+        'latency_weighted_avg': _latency_wma.get_weighted_average(),
+        'pipeline_latency_weighted_avg': _pipeline_latency_wma.get_weighted_average(),
+        'f1_sample_count': _f1_wma.sample_count(),
+        'latency_sample_count': _latency_wma.sample_count(),
+        'pipeline_latency_sample_count': _pipeline_latency_wma.sample_count()
+    }
 
 
 # ============================================================================
@@ -172,6 +290,9 @@ class PerformanceCalculator:
         model_f1_score.set(f1)
         model_accuracy.set(accuracy)
         
+        # Also update weighted moving average for F1
+        record_f1_weighted_sample(f1)
+        
         self.last_update = time.time()
     
     def get_stats(self) -> dict:
@@ -242,12 +363,15 @@ def get_metrics_manager() -> Optional[MetricsManager]:
 def record_pipeline_latency(stage: str, duration: float):
     """Record end-to-end pipeline latency (publisher_to_detector, detector_to_report)"""
     pipeline_latency_seconds.labels(stage=stage).observe(duration)
+    # Also update weighted moving average
+    record_pipeline_latency_weighted_sample(duration)
 
 
 # Internal latency tracking
 def record_latency(stage: str, duration: float):
     """Record latency for an internal processing stage"""
     latency_seconds.labels(stage=stage).observe(duration)
+    # NOTE: Internal latencies are NOT added to weighted avg (different scale)
 
 
 # Alert tracking

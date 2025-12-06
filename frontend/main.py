@@ -576,10 +576,23 @@ async def root():
 
 @app.get("/api/queue")
 async def get_queue():
-    """Get diverse queue of 10 reports"""
+    """Get diverse queue of 10 reports - auto-rescans for new reports"""
+    # Auto-rescan for new reports
+    scan_all_reports()
     return {
         'queue': frontend_queue,
         'stats': review_stats,
+        'total_reports': len(all_reports_cache)
+    }
+
+
+@app.post("/api/refresh")
+async def refresh_queue():
+    """Rescan reports directory and rebuild queue"""
+    scan_all_reports()
+    return {
+        'success': True,
+        'queue_size': len(frontend_queue),
         'total_reports': len(all_reports_cache)
     }
 

@@ -127,7 +127,8 @@
         "h": 6
       },
       "type": "gauge",
-      "title": "Model F1 Score (5m avg)",
+      "title": "F1 Score (5m avg)",
+      "description": "5-minute simple moving average",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -179,14 +180,15 @@
         "h": 6
       },
       "type": "stat",
-      "title": "Avg Latency (Last 5m)",
+      "title": "Detector Latency (p50)",
+      "description": "p50 detector processing time in ms",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "targets": [
         {
-          "expr": "avg_over_time(histogram_quantile(0.50, rate(fraud_pipeline_latency_seconds_bucket{stage=\"detector_to_report\"}[1m]))[5m:1m]) * 1000",
+          "expr": "histogram_quantile(0.50, rate(fraud_latency_seconds_bucket{stage=\"detector_total\"}[1m])) * 1000",
           "refId": "A"
         }
       ],
@@ -201,11 +203,11 @@
                 "color": "green"
               },
               {
-                "value": 1000,
+                "value": 500,
                 "color": "yellow"
               },
               {
-                "value": 2000,
+                "value": 1000,
                 "color": "red"
               }
             ]
