@@ -22,7 +22,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="docker-compose-full.yml"
+COMPOSE_FILE="docker/docker-compose-full.yml"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
@@ -266,6 +266,13 @@ cmd_restart() {
 cmd_stop() {
     print_header "STOPPING"
     stop_all
+    
+    # Clean up state files
+    print_step "Cleaning up state files..."
+    rm -f ./review_stats.json ./frontend_queue.json ./negative_transactions.json 2>/dev/null || true
+    rm -f ./fraud_reports/*.pdf ./fraud_reports/*.json 2>/dev/null || true
+    print_success "State files cleaned"
+    
     print_header "PIPELINE STOPPED"
     echo -e "${GREEN}All containers have been stopped.${NC}"
 }

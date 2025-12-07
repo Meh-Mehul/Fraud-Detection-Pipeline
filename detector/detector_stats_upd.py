@@ -1,8 +1,10 @@
-# pipeline/stats/stats_updater_redis.py
 """
-Stats updater node: reads transactions from NATS and updates Redis stats.
-This runs FIRST to initialize Redis and keep stats updated.
+DETECTOR STATS UPDATER NODE: 
+    - Reads transactions from NATS Topic -> fraud.transactions
+    - Updates Redis stats for customer, merchant, and category.
+    - Persists Redis stats.
 """
+
 import pathway as pw
 from pathlib import Path
 import sys
@@ -42,7 +44,6 @@ update_counter = {"total": 0}
 def update_stats_redis(trans_num, cc_num, amt, lat, lon, merch_lat, merch_long, category, merchant):
     """
     Update Redis stats for customer, merchant, and category.
-    Returns a status string to force execution.
     """
     update_counter["total"] += 1
     
@@ -60,7 +61,7 @@ def update_stats_redis(trans_num, cc_num, amt, lat, lon, merch_lat, merch_long, 
     except Exception as e:
         distance = 0.0
     
-    # Update Redis stats (is_fraud=0 since this is transaction data, not feedback)
+    # Update Redis stats
     try:
         redis_store.update_customer(str(cc_num), float(amt), float(distance), 0)
         redis_store.update_merchant(str(merchant), float(amt), 0)
@@ -133,8 +134,8 @@ def run_stats_node():
     # Write to null sink to force execution
     pw.io.null.write(updated)
     
-    print("✓ Stats updater running - updating Redis in real-time")
-    print("✓ Detector and feedback nodes will read from Redis")
+    print(" Stats updater running - updating Redis in real-time")
+    print(" Detector and feedback nodes will read from Redis")
     print()
     
     pw.run(persistence_config=CHECKPOINT_CONFIG)

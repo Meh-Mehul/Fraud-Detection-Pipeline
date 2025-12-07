@@ -1,6 +1,10 @@
 """
-Enhanced Fraud Detector with Pipeline Latency Tracking
-Measures: publisher→detector latency, detector processing time
+DETECTOR READ ONLY NODE: 
+    - Reads transactions from NATS Topic -> fraud.transactions
+    - Uses model to infer fraud -> uses rules + ml model to make inference
+    - Writes results to NATS Topic -> fraud.results ()   
+    - Writes alerts to NATS Topic -> fraud.alerts (stream containing only tranactions which are infered as fraud by the model)
+    - Logic for finding latency -> Finds the difference between publisher timestamp and detector timestamp.
 """
 
 import pathway as pw
@@ -30,7 +34,7 @@ from shared.metrics import (
     get_timestamp_ms
 )
 
-# Schema - now includes publish_timestamp_ms from publisher
+# Schema
 class TransactionSchema(pw.Schema):
     trans_num: str = pw.column_definition(dtype=str)
     trans_date_trans_time: str = pw.column_definition(dtype=str)
@@ -95,9 +99,9 @@ class ModelReader:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            print("📄 [DETECTOR] model loaded at startup.")
+            print(" [DETECTOR] model loaded at startup.")
         else:
-            print("⚠️  [DETECTOR] No model found at startup - will retry")
+            print("  [DETECTOR] No model found at startup - will retry")
 
     def reload(self, force=False):
         now = time.time()
@@ -107,7 +111,7 @@ class ModelReader:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            print(f"📄 [DETECTOR] model reloaded @ {datetime.utcnow().isoformat()}")
+            print(f" [DETECTOR] model reloaded @ {datetime.utcnow().isoformat()}")
         self._last = now
 
 model_reader = ModelReader()
@@ -133,7 +137,7 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
     except:
         return 0.0
 
-# ENHANCED INFERENCE UDF WITH PIPELINE LATENCY TRACKING
+# INFERENCE UDF WITH PIPELINE LATENCY TRACKING
 @pw.udf
 def run_infer_with_latency(
     trans_num, cc_num, amt, lat, long, merch_lat, merch_long,
@@ -141,21 +145,14 @@ def run_infer_with_latency(
     trans_date_trans_time, first, last, gender, street, zip,
     city_pop, job, dob, publish_timestamp_ms
 ):
-    """
-    Enhanced inference with pipeline latency tracking:
-    - Publisher→Detector latency (from publish_timestamp_ms)
-    - Detector processing time
-    - Adds detector_timestamp_ms for Report to calculate Detector→Report
-    """
-    
     # Start detector processing timer
     detector_start = time.time()
     detector_timestamp_ms = get_timestamp_ms()
     
-    # Calculate Publisher→Detector latency
+    # Calculate Publisher -> Detector latency
     if publish_timestamp_ms and publish_timestamp_ms > 0:
         pub_to_det_latency = (detector_timestamp_ms - publish_timestamp_ms) / 1000.0  # to seconds
-        if pub_to_det_latency > 0 and pub_to_det_latency < 60:  # sanity check
+        if pub_to_det_latency > 0 and pub_to_det_latency < 60:  
             record_pipeline_latency("publisher_to_detector", pub_to_det_latency)
     
     debug_counter["total"] += 1
@@ -164,7 +161,7 @@ def run_infer_with_latency(
     try:
         model_reader.reload(force=False)
     except Exception as e:
-        print(f"❌ Model reload error: {e}")
+        print(f" Model reload error: {e}")
 
     # Compute hour
     try:
@@ -193,6 +190,7 @@ def run_infer_with_latency(
     z_amt = ((float(amt) - cust["avg_amt"]) / cust["std_amt"]) if cust["std_amt"] > 0 else 0.0
     z_dist = (distance - cust["avg_dist"]) / cust["std_dist"] if cust["std_dist"] > 0 else 0.0
     
+
     feats = {
         "amt": float(amt),
         "z_amt": z_amt,
@@ -207,6 +205,7 @@ def run_infer_with_latency(
         "fraud_history": float(cust["fraud_history"]),
         "n": float(min(cust["txn_count"], 1000)),
     }
+
 
     # ML inference with latency tracking
     ml_start = time.time()
@@ -223,6 +222,7 @@ def run_infer_with_latency(
         ml_score = 0.0
         model_status = f"ERROR:{str(e)[:30]}"
     
+
     ml_duration = time.time() - ml_start
     record_latency("ml_inference", ml_duration)
 
@@ -253,7 +253,7 @@ def run_infer_with_latency(
         )
         
         if debug_counter["alerts"] % 10 == 0:
-            print(f"🚨 ALERT #{debug_counter['alerts']}: {trans_num} | T{tier} | {reason_str[:40]}")
+            print(f" ALERT #{debug_counter['alerts']}: {trans_num} | T{tier} | {reason_str[:40]}")
     
     # Total detector processing latency
     total_duration = time.time() - detector_start
@@ -262,7 +262,7 @@ def run_infer_with_latency(
     # Log progress
     if debug_counter["total"] % 1000 == 0:
         print(f"[DETECTOR] Processed: {debug_counter['total']:,} | Alerts: {debug_counter['alerts']}")
-        print(f"   📊 Latency - Detector: {total_duration*1000:.1f}ms | ML: {ml_duration*1000:.1f}ms")
+        print(f"    Latency - Detector: {total_duration*1000:.1f}ms | ML: {ml_duration*1000:.1f}ms")
 
     # Return JSON result with detector_timestamp_ms for Report latency tracking
     return json.dumps({
@@ -335,9 +335,9 @@ def run_detector():
         print(f"   Merchants: {summary['merchants']:,}")
         print(f"   Categories: {summary['categories']:,}")
     else:
-        print("❌ Redis not available!")
+        print(" Redis not available!")
         return
-    
+
     print("─" * 43)
 
     tx = pw.io.nats.read(

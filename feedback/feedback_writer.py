@@ -1,8 +1,10 @@
-# pipeline/feedback/feedback_writer_enhanced.py
 """
-Enhanced Feedback Writer with Model Performance Tracking
-Calculates: F1, Precision, Recall using sliding window
+Feedback Writer Node: 
+    - Reads alerts from NATS Topic -> fraud.alerts
+    - Writes feedback to NATS Topic -> fraud.feedback
+    - Tracks model performance  
 """
+
 from pathlib import Path
 import sys
 import os
@@ -50,7 +52,7 @@ class EnhancedTrainer:
         loaded = model_store.load()
         if loaded:
             self.model_main, self.model_validator = loaded
-            print("📄 Loaded existing model into feedback trainer.")
+            print(" Loaded existing model into feedback trainer.")
         else:
             self.model_main = compose.Pipeline(
                 preprocessing.StandardScaler(),
@@ -59,7 +61,7 @@ class EnhancedTrainer:
             self.model_validator = tree.HoeffdingAdaptiveTreeClassifier(
                 grace_period=150, delta=1e-4, seed=123
             )
-            print("✓ New trainer models initialized.")
+            print(" New trainer models initialized.")
         
         self.updates = 0
         self.fraud_count = 0
@@ -73,8 +75,8 @@ class EnhancedTrainer:
     def learn(self, feats: dict, label: int, actual_fraud: int):
         """
         Train model and track performance
-        label: predicted (1=alert, 0=no alert) - from detector
-        actual_fraud: ground truth (1=fraud, 0=legit)
+        label: predicted (from the DETECTOR READ ONLY NODE)
+        actual_fraud: ground truth
         """
         try:
             # Train the model with ground truth
@@ -118,11 +120,10 @@ class EnhancedTrainer:
             if self.updates % self.save_every == 0:
                 self.save()
         except Exception as e:
-            print(f"❌ Training error: {e}")
+            print(f" Training error: {e}")
 
     def save(self):
         """Save model and record metrics including weight delta"""
-        # Calculate weight delta (using test predictions as proxy for weights)
         try:
             test_features = {
                 "amt": 100.0, "z_amt": 0.5, "amt_ratio": 1.2, "dist": 10.0,
@@ -137,14 +138,14 @@ class EnhancedTrainer:
             
             self.previous_leaf_predictions = current_pred
         except Exception as e:
-            pass  # Ignore weight delta errors
+            pass  
         
         success = model_store.save(self.model_main, self.model_validator)
         if success:
             record_model_update()
-            print(f"💾 [FEEDBACK] Models saved @ {datetime.utcnow().isoformat()} ({self.updates} updates)")
+            print(f" [FEEDBACK] Models saved @ {datetime.utcnow().isoformat()} ({self.updates} updates)")
         else:
-            print(f"❌ [FEEDBACK] Model save FAILED")
+            print(f" [FEEDBACK] Model save FAILED")
 
 
 trainer = EnhancedTrainer()
@@ -170,7 +171,11 @@ def feedback_train_enhanced(trans_num, cc_num, amt, lat, long, merch_lat, merch_
                             unix_time, category, merchant, is_fraud):
     """
     Enhanced training with performance tracking
-    Tracks: model updates, F1/Precision/Recall
+    Tracks: 
+        - model updates
+        - F1   
+        - Precision
+        - Recall
     """
     
     # Compute distance & hour
@@ -216,7 +221,7 @@ def feedback_train_enhanced(trans_num, cc_num, amt, lat, long, merch_lat, merch_
         # Here we just pass the ground truth for training
         trainer.learn(feats, 0, int(is_fraud))  # 0 = dummy prediction, actual_fraud for training
     except Exception as e:
-        print(f"❌ Training error on {trans_num}: {e}")
+        print(f" Training error on {trans_num}: {e}")
 
     # Update Redis stats with ground truth
     try:
@@ -224,7 +229,7 @@ def feedback_train_enhanced(trans_num, cc_num, amt, lat, long, merch_lat, merch_
         redis_store.update_merchant(str(merchant), float(amt), int(is_fraud))
         redis_store.update_category(str(category), int(is_fraud))
     except Exception as e:
-        print(f"❌ Redis stats update error on {trans_num}: {e}")
+        print(f" Redis stats update error on {trans_num}: {e}")
 
     return None
 
@@ -254,7 +259,7 @@ def run_feedback_writer():
         print(f"   Merchants: {summary['merchants']:,}")
         print(f"   Categories: {summary['categories']:,}")
     else:
-        print("❌ Redis not available!")
+        print(" Redis not available!")
         return
     
     print()

@@ -29,16 +29,7 @@ CHECKPOINT_CONFIG = pw.persistence.Config.simple_config(
     snapshot_interval_ms=10000
 )
 
-print("╔═══════════════════════════════════════════╗")
-print("║  NEGATIVE RESULTS COLLECTOR               ║")
-print("║  (False Negative Detection Support)       ║")
-print("╚═══════════════════════════════════════════╝")
-print(f"Input: {RESULTS_TOPIC}")
-print(f"Output: {OUTPUT_FILE}")
-print(f"Buffer size: {MAX_TRANSACTIONS}")
-print()
-
-
+# Schema for reading results
 class ResultSchema(pw.Schema):
     alert_json: str = pw.column_definition(dtype=str)
 
@@ -106,12 +97,22 @@ def periodic_save():
         time.sleep(10)  # Save every 10 seconds
         save_buffer_to_file()
 
-save_thread = threading.Thread(target=periodic_save, daemon=True)
-save_thread.start()
-
 
 def run_negative_collector():
     """Main collector function"""
+    
+    print("╔═══════════════════════════════════════════╗")
+    print("║  NEGATIVE RESULTS COLLECTOR               ║")
+    print("║  (False Negative Detection Support)       ║")
+    print("╚═══════════════════════════════════════════╝")
+    print(f"Input: {RESULTS_TOPIC}")
+    print(f"Output: {OUTPUT_FILE}")
+    print(f"Buffer size: {MAX_TRANSACTIONS}")
+    print()
+    
+    # Start background saver thread
+    save_thread = threading.Thread(target=periodic_save, daemon=True)
+    save_thread.start()
     
     # Read from fraud.results
     results = pw.io.nats.read(
@@ -139,3 +140,4 @@ def run_negative_collector():
 
 if __name__ == "__main__":
     run_negative_collector()
+
