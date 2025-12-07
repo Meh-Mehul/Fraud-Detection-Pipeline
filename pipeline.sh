@@ -193,7 +193,7 @@ cmd_start() {
     
     # 2. Reset Prometheus data (optional - for fresh metrics)
     print_step "Resetting Prometheus data..."
-    docker volume rm fraud-detection-pipeline_prometheus-data 2>/dev/null || true
+    docker volume rm docker_prometheus-data 2>/dev/null || true
     
     # 3. Run cleanup
     run_cleanup
@@ -233,8 +233,8 @@ cmd_restart() {
     
     # 2. Reset Prometheus and Grafana data for fresh metrics
     print_step "Resetting Prometheus and Grafana data..."
-    docker volume rm fraud-detection-pipeline_prometheus-data 2>/dev/null || true
-    docker volume rm fraud-detection-pipeline_grafana-data 2>/dev/null || true
+    docker volume rm docker_prometheus-data 2>/dev/null || true
+    docker volume rm docker_grafana-data 2>/dev/null || true
     
     # 3. Rebuild images to pick up code changes
     build_images
@@ -245,7 +245,13 @@ cmd_restart() {
     # 5. Run cleanup
     run_cleanup
     
-    # 6. Load Redis stats
+    # 6. Check if pretrained models exist, if not run pretrain
+    if [ ! -f "./pathway_persistence/ml_models.pkl" ] || [ ! -f "./pathway_persistence/stats_store.json" ]; then
+        print_step "No pretrained models found - running pretrain..."
+        run_pretrain
+    fi
+    
+    # 7. Load Redis stats
     load_redis_stats
     
     # 7. Start pipeline nodes

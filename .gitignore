@@ -61,7 +61,8 @@ desktop.ini
 storage.db
 recovery_storage.db
 pathway_storage/
-pathway_persistence/
+# Keep pretrained models but ignore runtime checkpoints
+pathway_persistence/checkpoints_*/
 nats*
 persistent_data/
 fraud_reports/

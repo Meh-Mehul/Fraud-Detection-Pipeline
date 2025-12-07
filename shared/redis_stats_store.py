@@ -405,4 +405,4 @@ if __name__ == "__main__":
     print(f"      Avg Amount: ${cust['avg_amt']:.2f}")
     print(f"      Fraud History: {cust['fraud_history']}")
     
-    print(f"\n✓ Redis stats store ready!")
+    print(f"\n[OK] Redis stats store ready!")
