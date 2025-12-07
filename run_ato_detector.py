@@ -11,9 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.append(str(ROOT))
 
-from ato.ato_schema import LoginAttemptSchema, UserAccountProfileSchema, TransactionSchema
+from ato.ato_schema import TransactionSchema
 from ato.enrichment_layer import StreamingEnrichmentLayer
-from ato.detection_agents import apply_detection_agents, apply_transaction_agents
+from ato.detection_agents import apply_detection_agents
 from ato.intelligent_routing import IntelligentRouter
 
 # Import shared configuration
@@ -36,62 +36,66 @@ from shared.metrics import initialize_metrics, record_fraud_alert, record_latenc
 def run_ato_detection_pipeline():
     """Main ATO detection pipeline"""
     
-    print("═" * 70)
-    print("  🚀 ATO FRAUD DETECTION PIPELINE ACTIVE (TRANSACTION MODE)")
-    print("═" * 70)
-    
     # Initialize metrics
     metrics_manager = initialize_metrics("ato_detector", port=METRICS_ATO_DETECTOR)
     
-    # Read input streams
-    transactions = pw.io.csv.read(
-        path="transactions.csv",
+    # Read input stream from NATS (TransactionSchema only)
+    transactions = pw.io.nats.read(
+        uri=NATS_URI,
+        topic=ATO_LOGIN_ATTEMPTS_TOPIC,
         schema=TransactionSchema,
-        mode="static"
+        format="json",
+        name="ato_transaction_reader"
     )
     
-    print("✓ Connected to CSV input stream")
-    
-    # Build enrichment pipeline
-    enriched_transactions = StreamingEnrichmentLayer.build_transaction_enrichment_pipeline(
-        transaction_stream=transactions
+    # Build enrichment pipeline (no profile stream needed)
+    enriched_transactions = StreamingEnrichmentLayer.build_enrichment_pipeline(
+        login_stream=transactions
     )
     
-    print("✓ Enrichment layer initialized")
-    
-    # Apply detection agents
-    agent_results = apply_transaction_agents(
+    # Apply detection agents (no login/profile streams needed)
+    agent_results = apply_detection_agents(
         enriched_stream=enriched_transactions
     )
     
-    print("✓ Detection agents active")
-    
-    # Intelligent routing
+    # Intelligent routing (using transaction-specific method)
     detection_results = IntelligentRouter.process_and_route_transactions(
         agent_results=agent_results,
         enriched_data=enriched_transactions
     )
     
-    print("✓ Intelligent routing configured")
-    
     # Split and write to output topics
     routed_streams = IntelligentRouter.split_by_routing(detection_results)
     
-    # For this demo, we can just print the alerts or write to a file
-    pw.io.csv.write(
+    # Write to NATS topics
+    pw.io.nats.write(
         routed_streams['alerts'],
-        filename="fraud_alerts.csv"
+        uri=NATS_URI,
+        topic=ATO_FRAUD_ALERTS_TOPIC
     )
     
-    print("✓ Output configured to fraud_alerts.csv")
-    print()
-    print("🎯 ATO detection pipeline running...")
-    print("   Press Ctrl+C to stop")
-    print()
+    pw.io.nats.write(
+        routed_streams['manual_review'],
+        uri=NATS_URI,
+        topic=ATO_MANUAL_REVIEW_TOPIC
+    )
+    
+    pw.io.nats.write(
+        routed_streams['approved'],
+        uri=NATS_URI,
+        topic=ATO_APPROVED_LOGINS_TOPIC
+    )
+    
+    pw.io.nats.write(
+        routed_streams['feedback'],
+        uri=NATS_URI,
+        topic=ATO_FEEDBACK_LOOP_TOPIC
+    )
     
     # Run pipeline
     pw.run(
-        monitoring_level=pw.MonitoringLevel.ALL
+        monitoring_level=pw.MonitoringLevel.ALL,
+        persistence_config=ATO_CHECKPOINT_CONFIG
     )
 
 
@@ -99,9 +103,9 @@ def main():
     try:
         run_ato_detection_pipeline()
     except KeyboardInterrupt:
-        print("\n\n🛑 ATO detector shutting down...")
+        print("\n\nATO detector shutting down...")
     except Exception as e:
-        print(f"\n❌ Error in ATO detector: {e}")
+        print(f"\nError in ATO detector: {e}")
         raise
 
 

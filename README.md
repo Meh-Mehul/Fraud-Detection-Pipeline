@@ -60,9 +60,11 @@ python publisher/pub_common.py
 
 #### 4. Start ATO Fraud Pipeline
 
+[Dataset](https://www.kaggle.com/datasets/ealaxi/paysim1?resource=download) : Rename to `ato_data.csv`
+
 ```bash
 python run_ato_detector.py
-python publisher/pub_ato_common.py
+python publisher/pub_ato.py
 ```
 
 #### 6. Access Grafana Dashboard

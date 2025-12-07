@@ -452,9 +452,14 @@ class IntelligentRouter:
             amount=with_routing.amount,
             oldbalanceOrg=with_routing.oldbalanceOrg,
             newbalanceOrig=with_routing.newbalanceOrig,
+            oldbalanceDest=with_routing.oldbalanceDest,
+            newbalanceDest=with_routing.newbalanceDest,
             isFraud=with_routing.isFraud,
-            tx_count=with_routing.tx_count,
+            isFlaggedFraud=with_routing.isFlaggedFraud,
+            tx_velocity_5min=with_routing.tx_velocity_5min,
+            tx_velocity_1hour=with_routing.tx_velocity_1hour,
             total_amount_history=with_routing.total_amount_history,
+            avg_amount_history=with_routing.avg_amount_history,
             location_anomaly_score=with_routing.location_score,
             device_fingerprint_score=with_routing.device_score,
             credential_stuffing_score=with_routing.credential_score,
@@ -494,7 +499,7 @@ class IntelligentRouter:
                 with_routing.frequency_score,
                 with_routing.biometric_score
             ),
-            recommended_action=pw.apply(lambda: "review", with_routing.risk_level)
+            recommended_action=pw.apply(lambda x: "review", with_routing.risk_level)
         )
         return final_results
 

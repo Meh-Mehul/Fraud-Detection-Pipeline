@@ -116,18 +116,17 @@ class StreamingEnrichmentLayer:
     def compute_activity_velocity(login_stream: pw.Table) -> pw.Table:
         """
         Compute activity velocity metrics using stateful aggregation
-        Tracks login rate over different time windows (5 min, 1 hour)
-
-        Note: Simplified version using groupby instead of temporal windows
-        since temporal windows require datetime types, not unix timestamps
+        Tracks transaction rate for each account (nameOrig)
         """
-        velocity_stats = login_stream.groupby(login_stream.user_id).reduce(
-            user_id=pw.this.user_id,
-            login_velocity_5min=pw.reducers.count(),
-            failed_attempts_5min=pw.reducers.sum(
-                pw.if_else(pw.this.login_status == "failed", 1, 0)
+        velocity_stats = login_stream.groupby(login_stream.nameOrig).reduce(
+            nameOrig=pw.this.nameOrig,
+            tx_velocity_5min=pw.reducers.count(),
+            failed_tx_5min=pw.reducers.sum(
+                pw.if_else(pw.this.type == "TRANSFER", 1, 0)
             ),
-            login_velocity_1hour=pw.reducers.count()
+            tx_velocity_1hour=pw.reducers.count(),
+            total_amount=pw.reducers.sum(pw.this.amount),
+            avg_amount=pw.reducers.avg(pw.this.amount)
         )
 
         return velocity_stats, velocity_stats
@@ -135,80 +134,33 @@ class StreamingEnrichmentLayer:
     @staticmethod
     def enrich_with_profile(
         login_stream: pw.Table,
-        profile_stream: pw.Table,
         velocity_5min: pw.Table,
         velocity_1hour: pw.Table
     ) -> pw.Table:
         """
-        Enrich login attempts with user profile data and velocity metrics
-        Implements the Feature Enrichment step from architecture
+        Enrich transactions with velocity metrics
         """
         enriched = login_stream.join(
-            profile_stream,
-            login_stream.user_id == profile_stream.user_id,
-            how=JoinMode.LEFT
-        ).select(
-            attempt_id=login_stream.attempt_id,
-            user_id=login_stream.user_id,
-            timestamp=login_stream.timestamp,
-            login_status=login_stream.login_status,
-            device_id=login_stream.device_id,
-            latitude=login_stream.latitude,
-            longitude=login_stream.longitude,
-            country=login_stream.country,
-            is_vpn=login_stream.is_vpn,
-            typical_locations=profile_stream.typical_locations,
-            typical_devices=profile_stream.typical_devices,
-            typical_hours=profile_stream.typical_login_hours,
-            account_created_at=profile_stream.account_created_at,
-            mfa_enabled=profile_stream.mfa_enabled,
-            previous_ato_incidents=profile_stream.previous_ato_incidents,
-        )
-
-        enriched = enriched.select(
-            *pw.this,
-            distance_from_typical_location_km=calculate_distance_from_typical(
-                pw.this.latitude,
-                pw.this.longitude,
-                pw.this.typical_locations
-            ),
-            is_new_device=is_new_device(
-                pw.this.device_id,
-                pw.this.typical_devices
-            ),
-            is_unusual_hour=is_unusual_hour(
-                pw.this.timestamp,
-                pw.this.typical_hours
-            ),
-            account_age_days=calculate_account_age_days(
-                pw.this.account_created_at,
-                pw.this.timestamp
-            )
-        )
-
-        enriched = enriched.join(
             velocity_5min,
-            enriched.user_id == velocity_5min.user_id,
+            login_stream.nameOrig == velocity_5min.nameOrig,
             how=JoinMode.LEFT
         ).select(
-            attempt_id=enriched.attempt_id,
-            user_id=enriched.user_id,
-            timestamp=enriched.timestamp,
-            login_status=enriched.login_status,
-            device_id=enriched.device_id,
-            latitude=enriched.latitude,
-            longitude=enriched.longitude,
-            country=enriched.country,
-            is_vpn=enriched.is_vpn,
-            login_velocity_5min=pw.coalesce(velocity_5min.login_velocity_5min, 0),
-            login_velocity_1hour=pw.coalesce(velocity_5min.login_velocity_1hour, 0),
-            failed_attempts_5min=pw.coalesce(velocity_5min.failed_attempts_5min, 0),
-            distance_from_typical_location_km=enriched.distance_from_typical_location_km,
-            is_new_device=enriched.is_new_device,
-            is_unusual_hour=enriched.is_unusual_hour,
-            account_age_days=enriched.account_age_days,
-            mfa_enabled=enriched.mfa_enabled,
-            previous_ato_incidents=enriched.previous_ato_incidents
+            step=login_stream.step,
+            type=login_stream.type,
+            amount=login_stream.amount,
+            nameOrig=login_stream.nameOrig,
+            oldbalanceOrg=login_stream.oldbalanceOrg,
+            newbalanceOrig=login_stream.newbalanceOrig,
+            nameDest=login_stream.nameDest,
+            oldbalanceDest=login_stream.oldbalanceDest,
+            newbalanceDest=login_stream.newbalanceDest,
+            isFraud=login_stream.isFraud,
+            isFlaggedFraud=login_stream.isFlaggedFraud,
+            tx_velocity_5min=pw.coalesce(velocity_5min.tx_velocity_5min, 0),
+            tx_velocity_1hour=pw.coalesce(velocity_5min.tx_velocity_1hour, 0),
+            failed_tx_5min=pw.coalesce(velocity_5min.failed_tx_5min, 0),
+            total_amount_history=pw.coalesce(velocity_5min.total_amount, 0.0),
+            avg_amount_history=pw.coalesce(velocity_5min.avg_amount, 0.0)
         )
 
         return enriched
@@ -248,11 +200,7 @@ class StreamingEnrichmentLayer:
     def build_transaction_enrichment_pipeline(
         transaction_stream: pw.Table
     ) -> pw.Table:
-        # Simplified for performance: skip heavy aggregation on 6M rows for this demo
-        # velocity = StreamingEnrichmentLayer.compute_transaction_velocity(transaction_stream)
-        # enriched = StreamingEnrichmentLayer.enrich_transaction(transaction_stream, velocity)
-        
-        # Just pass through with dummy columns
+
         enriched = transaction_stream.select(
             *transaction_stream,
             tx_count=pw.apply(lambda x: 0, transaction_stream.step),
@@ -262,18 +210,16 @@ class StreamingEnrichmentLayer:
 
     @staticmethod
     def build_enrichment_pipeline(
-        login_stream: pw.Table,
-        profile_stream: pw.Table
+        login_stream: pw.Table
     ) -> pw.Table:
         """
         Main entry point: builds complete enrichment pipeline
-        Returns enriched login stream with all features
+        Returns enriched transaction stream with velocity features
         """
         velocity_5min, velocity_1hour = StreamingEnrichmentLayer.compute_activity_velocity(login_stream)
 
         enriched_stream = StreamingEnrichmentLayer.enrich_with_profile(
             login_stream,
-            profile_stream,
             velocity_5min,
             velocity_1hour
         )
