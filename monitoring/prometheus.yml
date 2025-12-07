@@ -10,54 +10,64 @@ scrape_configs:
   # ========================================================================
   # FRAUD DETECTION COMPONENTS
   # ========================================================================
-  
+
   # Detector component (port 8001)
-  - job_name: 'fraud-detector'
+  - job_name: "fraud-detector"
     static_configs:
-      - targets: ['host.docker.internal:8001']
+      - targets: ["host.docker.internal:8001"]
         labels:
-          component: 'detector'
-          environment: 'production'
-    metrics_path: '/metrics'
-    scrape_interval: 5s  # More frequent for latency tracking
+          component: "detector"
+          environment: "production"
+    metrics_path: "/metrics"
+    scrape_interval: 5s # More frequent for latency tracking
 
   # Stats Updater component (port 8002)
-  - job_name: 'fraud-stats-updater'
+  - job_name: "fraud-stats-updater"
     static_configs:
-      - targets: ['host.docker.internal:8002']
+      - targets: ["host.docker.internal:8002"]
         labels:
-          component: 'stats_updater'
-          environment: 'production'
-    metrics_path: '/metrics'
+          component: "stats_updater"
+          environment: "production"
+    metrics_path: "/metrics"
     scrape_interval: 10s
 
   # Feedback component (port 8003) - Model performance metrics
-  - job_name: 'fraud-feedback'
+  - job_name: "fraud-feedback"
     static_configs:
-      - targets: ['host.docker.internal:8003']
+      - targets: ["host.docker.internal:8003"]
         labels:
-          component: 'feedback'
-          environment: 'production'
-    metrics_path: '/metrics'
-    scrape_interval: 5s  # More frequent for F1/Precision/Recall updates
+          component: "feedback"
+          environment: "production"
+    metrics_path: "/metrics"
+    scrape_interval: 5s # More frequent for F1/Precision/Recall updates
 
   # Report Generator component (port 8004)
-  - job_name: 'fraud-report-generator'
+  - job_name: "fraud-report-generator"
     static_configs:
-      - targets: ['host.docker.internal:8004']
+      - targets: ["host.docker.internal:8004"]
         labels:
-          component: 'report_generator'
-          environment: 'production'
-    metrics_path: '/metrics'
+          component: "report_generator"
+          environment: "production"
+    metrics_path: "/metrics"
     scrape_interval: 10s
+
+  # ATO Detector component (port 8005)
+  - job_name: "ato-detector"
+    static_configs:
+      - targets: ["host.docker.internal:8005"]
+        labels:
+          component: "ato_detector"
+          environment: "production"
+    metrics_path: "/metrics"
+    scrape_interval: 5s # More frequent for ATO detection latency tracking
 
   # ========================================================================
   # MINIMAL INFRASTRUCTURE MONITORING
   # ========================================================================
-  
+
   # Prometheus self-monitoring
-  - job_name: 'prometheus'
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
         labels:
-          component: 'prometheus'
+          component: "prometheus"

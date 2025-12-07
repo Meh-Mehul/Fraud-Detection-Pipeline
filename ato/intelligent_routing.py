@@ -6,7 +6,11 @@ Implements the routing layer from the architecture diagram
 
 import pathway as pw
 import json
+import time
 from typing import Dict, Any
+
+# Import metrics for recording alerts
+from shared.metrics import record_fraud_alert, record_latency
 
 
 @pw.udf
@@ -153,16 +157,44 @@ def determine_routing(risk_level: str, final_score: float, final_confidence: flo
     - approved_logins: Low risk (<50 confidence or low score)
     - agent_feedback_loop: All detections for model retraining
     """
+    routing = None
     if risk_level == "high" and final_confidence > 90:
-        return "ato_fraud_alerts"
+        routing = "ato_fraud_alerts"
     elif risk_level == "high" and final_confidence > 70:
-        return "manual_review_queue"
+        routing = "manual_review_queue"
     elif risk_level == "medium" and final_score > 50:
-        return "manual_review_queue"
+        routing = "manual_review_queue"
     elif risk_level == "medium" and final_confidence > 60:
-        return "manual_review_queue"
+        routing = "manual_review_queue"
     else:
-        return "approved_logins"
+        routing = "approved_logins"
+    
+    # Record metrics for fraud alerts
+    if routing == "ato_fraud_alerts":
+        # Determine tier based on score
+        if final_score >= 85:
+            tier = 3
+        elif final_score >= 70:
+            tier = 2
+        else:
+            tier = 1
+        
+        # Determine pattern based on risk level and score
+        pattern = f"ato_{risk_level}_risk"
+        
+        # Record the alert
+        try:
+            record_fraud_alert(
+                tier=tier,
+                pattern=pattern,
+                risk_score=final_score,
+                component="ato_detector"
+            )
+        except Exception as e:
+            # Silently continue if metrics recording fails
+            pass
+    
+    return routing
 
 
 @pw.udf
@@ -244,6 +276,39 @@ def compile_key_indicators(
         if score > 15
     ]
     return json.dumps(indicators)
+
+
+@pw.udf
+def record_detection_latency(start_timestamp_ms: int) -> int:
+    """
+    Record the detection latency and return current timestamp
+    This tracks end-to-end processing time from transaction arrival to detection
+    """
+    current_time_ms = int(time.time() * 1000)
+    latency_seconds = (current_time_ms - start_timestamp_ms) / 1000.0
+    
+    # Record internal processing latency
+    record_latency("ato_detection_total", latency_seconds)
+    
+    return current_time_ms
+
+
+@pw.udf
+def record_agent_latency(
+    location_score: float,
+    device_score: float, 
+    credential_score: float,
+    frequency_score: float,
+    biometric_score: float
+) -> int:
+    """
+    Record metrics for agent execution
+    This is called after all agents complete their analysis
+    """
+    # Simple latency tracking - in real scenario we'd track per-agent
+    # For now, just mark that detection completed
+    current_time_ms = int(time.time() * 1000)
+    return current_time_ms
 
 
 @pw.udf
@@ -444,62 +509,70 @@ class IntelligentRouter:
                 with_final_scores.final_confidence
             )
         )
-        final_results = with_routing.select(
-            step=with_routing.step,
-            type=with_routing.type,
-            nameOrig=with_routing.nameOrig,
-            nameDest=with_routing.nameDest,
-            amount=with_routing.amount,
-            oldbalanceOrg=with_routing.oldbalanceOrg,
-            newbalanceOrig=with_routing.newbalanceOrig,
-            oldbalanceDest=with_routing.oldbalanceDest,
-            newbalanceDest=with_routing.newbalanceDest,
-            isFraud=with_routing.isFraud,
-            isFlaggedFraud=with_routing.isFlaggedFraud,
-            tx_velocity_5min=with_routing.tx_velocity_5min,
-            tx_velocity_1hour=with_routing.tx_velocity_1hour,
-            total_amount_history=with_routing.total_amount_history,
-            avg_amount_history=with_routing.avg_amount_history,
-            location_anomaly_score=with_routing.location_score,
-            device_fingerprint_score=with_routing.device_score,
-            credential_stuffing_score=with_routing.credential_score,
-            login_frequency_score=with_routing.frequency_score,
-            behavioral_biometrics_score=with_routing.biometric_score,
-            location_confidence=with_routing.location_confidence,
-            device_confidence=with_routing.device_confidence,
-            credential_confidence=with_routing.credential_confidence,
-            frequency_confidence=with_routing.frequency_confidence,
-            biometric_confidence=with_routing.biometric_confidence,
-            final_fraud_score=with_routing.final_fraud_score,
-            final_confidence=with_routing.final_confidence,
-            risk_level=with_routing.risk_level,
+        
+        # Add processing timestamp to track latency
+        with_latency = with_routing.select(
+            *with_routing,
+            processing_timestamp=pw.apply(lambda x: int(time.time() * 1000), with_routing.step)
+        )
+        
+        final_results = with_latency.select(
+            step=with_latency.step,
+            type=with_latency.type,
+            nameOrig=with_latency.nameOrig,
+            nameDest=with_latency.nameDest,
+            amount=with_latency.amount,
+            oldbalanceOrg=with_latency.oldbalanceOrg,
+            newbalanceOrig=with_latency.newbalanceOrig,
+            oldbalanceDest=with_latency.oldbalanceDest,
+            newbalanceDest=with_latency.newbalanceDest,
+            isFraud=with_latency.isFraud,
+            isFlaggedFraud=with_latency.isFlaggedFraud,
+            tx_velocity_5min=with_latency.tx_velocity_5min,
+            tx_velocity_1hour=with_latency.tx_velocity_1hour,
+            total_amount_history=with_latency.total_amount_history,
+            avg_amount_history=with_latency.avg_amount_history,
+            location_anomaly_score=with_latency.location_score,
+            device_fingerprint_score=with_latency.device_score,
+            credential_stuffing_score=with_latency.credential_score,
+            login_frequency_score=with_latency.frequency_score,
+            behavioral_biometrics_score=with_latency.biometric_score,
+            location_confidence=with_latency.location_confidence,
+            device_confidence=with_latency.device_confidence,
+            credential_confidence=with_latency.credential_confidence,
+            frequency_confidence=with_latency.frequency_confidence,
+            biometric_confidence=with_latency.biometric_confidence,
+            final_fraud_score=with_latency.final_fraud_score,
+            final_confidence=with_latency.final_confidence,
+            risk_level=with_latency.risk_level,
             routing_decision=determine_routing(
-                with_routing.risk_level,
-                with_routing.final_fraud_score,
-                with_routing.final_confidence
+                with_latency.risk_level,
+                with_latency.final_fraud_score,
+                with_latency.final_confidence
             ),
             alert_reasons=compile_alert_reasons(
-                with_routing.location_reasons,
-                with_routing.device_reasons,
-                with_routing.credential_reasons,
-                with_routing.frequency_reasons,
-                with_routing.biometric_reasons,
-                with_routing.location_score,
-                with_routing.device_score,
-                with_routing.credential_score,
-                with_routing.frequency_score,
-                with_routing.biometric_score
+                with_latency.location_reasons,
+                with_latency.device_reasons,
+                with_latency.credential_reasons,
+                with_latency.frequency_reasons,
+                with_latency.biometric_reasons,
+                with_latency.location_score,
+                with_latency.device_score,
+                with_latency.credential_score,
+                with_latency.frequency_score,
+                with_latency.biometric_score
             ),
             key_indicators=compile_key_indicators(
-                with_routing.final_fraud_score,
-                with_routing.final_confidence,
-                with_routing.location_score,
-                with_routing.device_score,
-                with_routing.credential_score,
-                with_routing.frequency_score,
-                with_routing.biometric_score
+                with_latency.final_fraud_score,
+                with_latency.final_confidence,
+                with_latency.location_score,
+                with_latency.device_score,
+                with_latency.credential_score,
+                with_latency.frequency_score,
+                with_latency.biometric_score
             ),
-            recommended_action=pw.apply(lambda x: "review", with_routing.risk_level)
+            recommended_action=pw.apply(lambda x: "review", with_latency.risk_level),
+            processing_timestamp=with_latency.processing_timestamp
         )
         return final_results
 
