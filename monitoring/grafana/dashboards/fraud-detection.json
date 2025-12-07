@@ -31,7 +31,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(fraud_pipeline_latency_seconds_bucket{stage=\"detector_to_report\"}[30s]))",
+          "expr": "histogram_quantile(0.50, rate(fraud_pipeline_latency_seconds_bucket{stage=\"detector_to_report\"}[1m]))",
           "legendFormat": "p50 (median)",
           "refId": "A"
         }

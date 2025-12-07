@@ -234,6 +234,7 @@ services:
       - ../negative_transactions.json:/app/negative_transactions.json
     environment:
       - REDIS_HOST=redis
+      - NATS_URI=nats://nats:4222
     networks:
       - fraud-network
     depends_on:

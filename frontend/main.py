@@ -9,9 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import json
+import os
 from datetime import datetime
 import re
 from typing import Optional, List, Set
+
+# NATS configuration
+NATS_URI = os.environ.get("NATS_URI", "nats://localhost:4222")
 
 # PDF Parser
 try:
@@ -825,7 +829,7 @@ async def negative_feedback(feedback: NegativeFeedbackRequest):
     import asyncio
     
     try:
-        nc = await nats.connect("nats://localhost:4222")
+        nc = await nats.connect(NATS_URI)
         
         feedback_data = {
             "trans_num": feedback.trans_num,
