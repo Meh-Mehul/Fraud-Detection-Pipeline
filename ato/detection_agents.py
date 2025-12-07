@@ -475,3 +475,53 @@ def apply_detection_agents(enriched_stream: pw.Table, login_stream: pw.Table, pr
     )
 
     return with_agents
+
+
+@pw.udf
+def high_amount_agent(amount: float) -> str:
+    score = 0.0
+    confidence = 80.0
+    reasons = []
+    if amount > 200000:
+        score = 90
+        reasons.append("Very high transaction amount")
+    elif amount > 50000:
+        score = 60
+        reasons.append("High transaction amount")
+    return json.dumps({"score": score, "confidence": confidence, "reasons": reasons})
+
+@pw.udf
+def balance_drain_agent(oldbalanceOrg: float, newbalanceOrig: float) -> str:
+    score = 0.0
+    confidence = 90.0
+    reasons = []
+    if oldbalanceOrg > 0 and newbalanceOrig == 0:
+        score = 95
+        reasons.append("Account emptied completely")
+    elif oldbalanceOrg > 0 and newbalanceOrig < oldbalanceOrg * 0.1:
+        score = 70
+        reasons.append("Account nearly emptied")
+    return json.dumps({"score": score, "confidence": confidence, "reasons": reasons})
+
+def apply_transaction_agents(enriched_stream: pw.Table) -> pw.Table:
+    """
+    Apply agents to transaction stream
+    """
+    with_agents = enriched_stream.select(
+        step=enriched_stream.step,
+        type=enriched_stream.type,
+        amount=enriched_stream.amount,
+        nameOrig=enriched_stream.nameOrig,
+        oldbalanceOrg=enriched_stream.oldbalanceOrg,
+        newbalanceOrig=enriched_stream.newbalanceOrig,
+        nameDest=enriched_stream.nameDest,
+        isFraud=enriched_stream.isFraud,
+        tx_count=enriched_stream.tx_count,
+        total_amount_history=enriched_stream.total_amount_history,
+        location_result=high_amount_agent(enriched_stream.amount),
+        credential_result=balance_drain_agent(enriched_stream.oldbalanceOrg, enriched_stream.newbalanceOrig),
+        device_result=pw.apply(lambda _: json.dumps({"score": 0, "confidence": 0, "reasons": []}), enriched_stream.amount),
+        frequency_result=pw.apply(lambda _: json.dumps({"score": 0, "confidence": 0, "reasons": []}), enriched_stream.amount),
+        biometric_result=pw.apply(lambda _: json.dumps({"score": 0, "confidence": 0, "reasons": []}), enriched_stream.amount)
+    )
+    return with_agents

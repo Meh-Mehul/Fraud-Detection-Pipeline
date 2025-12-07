@@ -7,6 +7,11 @@ import pathway as pw
 from pathlib import Path
 import sys
 import math
+from shared.metrics import initialize_metrics, get_metrics_manager
+
+
+METRICS_PORT = 8002
+
 
 # Add parent to path for imports
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +77,7 @@ def update_stats_redis(trans_num, cc_num, amt, lat, lon, merch_lat, merch_long, 
         print(f"❌ Redis update error for {trans_num}: {e}")
         return f"error_{trans_num}"
 
+metrics_manager = initialize_metrics("stats_updater", port=METRICS_PORT)
 
 def run_stats_node():
     print("═══════════════════════════════════════════")

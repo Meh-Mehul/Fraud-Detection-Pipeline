@@ -25,4 +25,7 @@ else
     echo "Directory ./publisher does not exist — skipping."
 fi
 
+echo "Removing frontend review stats..."
+rm -f ./review_stats.json ./frontend_queue.json 2>/dev/null || true
+
 echo "Cleanup complete."

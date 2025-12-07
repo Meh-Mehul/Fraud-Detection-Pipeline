@@ -1,40 +1,31 @@
-# Use Python 3.11 slim image for smaller size
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies (for NATS and other libs)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    curl \
-    netcat-openbsd \
-    nats-server \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Increase pip timeout and use better download settings
+ENV PIP_DEFAULT_TIMEOUT=300
+ENV PIP_NO_CACHE_DIR=1
 
-# Copy the entire project
+# Copy requirements first (layer caching)
+COPY requirements.txt .
+
+# Install dependencies with retry logic and increased timeout
+RUN pip install --default-timeout=300 --retries 5 -r requirements.txt || \
+    pip install --default-timeout=600 --retries 10 -r requirements.txt
+
+# Copy application code
 COPY . .
 
-# Create a startup script to run NATS and all Python scripts
-RUN echo '#!/bin/bash\n\
-nats-server -DV &\n\
-echo "Waiting for NATS to start..."\n\
-until nc -z localhost 4222; do\n\
-  sleep 1\n\
-done\n\
-echo "NATS is ready. Starting Python scripts..."\n\
-python run_publisher.py &\n\
-python run_detector.py &\n\
-python run_report.py &\n\
-python run_feedback.py &\n\
-wait' > /app/start.sh && chmod +x /app/start.sh
+# Create necessary directories
+RUN mkdir -p pathway_persistence fraud_reports publisher/temp shared ato
 
-# Expose NATS port (internal only, no host binding needed)
-EXPOSE 4222
+# Don't run pretrain in Dockerfile - do it in entrypoint or externally
+# RUN python pretrain.py
 
-# Run the startup script
-CMD ["/app/start.sh"]
+CMD ["python", "run_detector.py"]

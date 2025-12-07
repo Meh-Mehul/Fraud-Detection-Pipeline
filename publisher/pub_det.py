@@ -2,6 +2,7 @@
 """
 Publish second half of the CSV continuously to fraud.transactions,
 but REMOVE the is_fraud column since the detector does not use it.
+Adds publish_timestamp_ms for latency tracking.
 """
 
 import time, threading
@@ -12,6 +13,8 @@ import sys
 # Add project root to Python path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
+
+from shared.metrics import get_timestamp_ms
 
 ORIGINAL_FILE = "fraudTrain.csv"
 TEMP_STREAM_FILE = "./publisher/temp_det_stream.csv"
@@ -47,6 +50,15 @@ class TransactionSchema(pw.Schema):
 
     merch_lat: float = pw.column_definition(dtype=float)
     merch_long: float = pw.column_definition(dtype=float)
+
+
+# UDF to add publish timestamp
+@pw.udf
+def add_publish_timestamp() -> int:
+    """Return current timestamp in milliseconds for latency tracking"""
+    return get_timestamp_ms()
+
+
 def strip_is_fraud(row: str) -> str:
     """
     Removes the last column (is_fraud) from a CSV row.
@@ -114,7 +126,13 @@ def run_pub():
         autocommit_duration_ms=100,
     )
 
-    pw.io.nats.write(tx, uri=NATS_URI, topic=NATS_TOPIC, format="json")
+    # Add publish timestamp for latency tracking
+    tx_with_timestamp = tx.select(
+        *pw.this,
+        publish_timestamp_ms=add_publish_timestamp()
+    )
+
+    pw.io.nats.write(tx_with_timestamp, uri=NATS_URI, topic=NATS_TOPIC, format="json")
     pw.run()
 
 

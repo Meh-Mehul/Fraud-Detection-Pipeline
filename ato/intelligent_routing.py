@@ -396,6 +396,109 @@ class IntelligentRouter:
         return final_results
 
     @staticmethod
+    def process_and_route_transactions(agent_results: pw.Table, enriched_data: pw.Table) -> pw.Table:
+        processed = agent_results.select(
+            *agent_results,
+            location_score=extract_score(agent_results.location_result),
+            device_score=extract_score(agent_results.device_result),
+            credential_score=extract_score(agent_results.credential_result),
+            frequency_score=extract_score(agent_results.frequency_result),
+            biometric_score=extract_score(agent_results.biometric_result),
+            location_confidence=extract_confidence(agent_results.location_result),
+            device_confidence=extract_confidence(agent_results.device_result),
+            credential_confidence=extract_confidence(agent_results.credential_result),
+            frequency_confidence=extract_confidence(agent_results.frequency_result),
+            biometric_confidence=extract_confidence(agent_results.biometric_result),
+            location_reasons=extract_reasons(agent_results.location_result),
+            device_reasons=extract_reasons(agent_results.device_result),
+            credential_reasons=extract_reasons(agent_results.credential_result),
+            frequency_reasons=extract_reasons(agent_results.frequency_result),
+            biometric_reasons=extract_reasons(agent_results.biometric_result),
+        )
+        with_final_scores = processed.select(
+            *processed,
+            final_fraud_score=calculate_final_score(
+                processed.location_score,
+                processed.device_score,
+                processed.credential_score,
+                processed.frequency_score,
+                processed.biometric_score,
+                processed.location_confidence,
+                processed.device_confidence,
+                processed.credential_confidence,
+                processed.frequency_confidence,
+                processed.biometric_confidence
+            ),
+            final_confidence=calculate_final_confidence(
+                processed.location_confidence,
+                processed.device_confidence,
+                processed.credential_confidence,
+                processed.frequency_confidence,
+                processed.biometric_confidence
+            )
+        )
+        with_routing = with_final_scores.select(
+            *with_final_scores,
+            risk_level=determine_risk_level(
+                with_final_scores.final_fraud_score,
+                with_final_scores.final_confidence
+            )
+        )
+        final_results = with_routing.select(
+            step=with_routing.step,
+            type=with_routing.type,
+            nameOrig=with_routing.nameOrig,
+            nameDest=with_routing.nameDest,
+            amount=with_routing.amount,
+            oldbalanceOrg=with_routing.oldbalanceOrg,
+            newbalanceOrig=with_routing.newbalanceOrig,
+            isFraud=with_routing.isFraud,
+            tx_count=with_routing.tx_count,
+            total_amount_history=with_routing.total_amount_history,
+            location_anomaly_score=with_routing.location_score,
+            device_fingerprint_score=with_routing.device_score,
+            credential_stuffing_score=with_routing.credential_score,
+            login_frequency_score=with_routing.frequency_score,
+            behavioral_biometrics_score=with_routing.biometric_score,
+            location_confidence=with_routing.location_confidence,
+            device_confidence=with_routing.device_confidence,
+            credential_confidence=with_routing.credential_confidence,
+            frequency_confidence=with_routing.frequency_confidence,
+            biometric_confidence=with_routing.biometric_confidence,
+            final_fraud_score=with_routing.final_fraud_score,
+            final_confidence=with_routing.final_confidence,
+            risk_level=with_routing.risk_level,
+            routing_decision=determine_routing(
+                with_routing.risk_level,
+                with_routing.final_fraud_score,
+                with_routing.final_confidence
+            ),
+            alert_reasons=compile_alert_reasons(
+                with_routing.location_reasons,
+                with_routing.device_reasons,
+                with_routing.credential_reasons,
+                with_routing.frequency_reasons,
+                with_routing.biometric_reasons,
+                with_routing.location_score,
+                with_routing.device_score,
+                with_routing.credential_score,
+                with_routing.frequency_score,
+                with_routing.biometric_score
+            ),
+            key_indicators=compile_key_indicators(
+                with_routing.final_fraud_score,
+                with_routing.final_confidence,
+                with_routing.location_score,
+                with_routing.device_score,
+                with_routing.credential_score,
+                with_routing.frequency_score,
+                with_routing.biometric_score
+            ),
+            recommended_action=pw.apply(lambda: "review", with_routing.risk_level)
+        )
+        return final_results
+
+    @staticmethod
     def split_by_routing(results: pw.Table) -> Dict[str, pw.Table]:
         """
         Split results into separate tables based on routing decision

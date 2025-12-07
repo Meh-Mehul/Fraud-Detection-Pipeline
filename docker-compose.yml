@@ -1,14 +1,136 @@
+version: "3.8"
+
 services:
-  app:
-    build: .
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - fraud-net
+
+  detector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python run_detector.py
+    depends_on:
+      - redis
     volumes:
       - ./pathway_persistence:/app/pathway_persistence
-      - ./fraud_reports:/app/fraud_reports
-      - ./fraudTrain.csv:/app/fraudTrain.csv:ro
-      - ./fraudTest.csv:/app/fraudTest.csv:ro
+      - ./shared:/app/shared
+    environment:
+      - REDIS_HOST=redis
     networks:
-      - fraud-network
+      - fraud-net
+
+  report:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python run_report.py
+    depends_on:
+      - detector
+    volumes:
+      - ./fraud_reports:/app/fraud_reports
+      - ./shared:/app/shared
+    networks:
+      - fraud-net
+
+  stats_updater:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python run_stats_updater.py
+    depends_on:
+      - redis
+    networks:
+      - fraud-net
+
+  feedback:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python run_feedback.py
+    depends_on:
+      - redis
+    networks:
+      - fraud-net
+
+  publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python publisher/pub_common.py
+    volumes:
+      - ./publisher:/app/publisher
+    networks:
+      - fraud-net
+
+  ato_detector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python run_ato_detector.py
+    depends_on:
+      - redis
+    volumes:
+      - ./ato:/app/ato
+    networks:
+      - fraud-net
+
+  ato_publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python publisher/pub_ato_common.py
+    volumes:
+      - ./publisher:/app/publisher
+    networks:
+      - fraud-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn frontend.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./fraud_reports:/app/fraud_reports
+    networks:
+      - fraud-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    networks:
+      - fraud-net
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - fraud-net
 
 networks:
-  fraud-network:
+  fraud-net:
     driver: bridge
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:

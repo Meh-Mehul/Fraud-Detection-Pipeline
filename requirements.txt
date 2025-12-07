@@ -271,6 +271,7 @@ pyyaml==6.0.2
 qdrant-client==1.15.1
 rapidfuzz==3.14.1
 rapidocr==3.4.2
+redis
 referencing==0.36.2
 regex==2025.9.18
 reportlab==4.4.4
@@ -346,3 +347,4 @@ xyzservices==2025.4.0
 yarl==1.22.0
 zipp==3.23.0
 zstandard==0.25.0
+prometheus_client

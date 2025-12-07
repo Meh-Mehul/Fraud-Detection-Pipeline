@@ -173,12 +173,9 @@ class FraudRulesLoader:
         return self.get_detector_rules().get("tier3_rules", {})
     
     def check_tier1_extreme_signals(self, z_amt: float, amt: float, z_dist: float, 
-                                    distance: float, merch_fraud_rate: float, 
-                                    merch_total: int, fraud_history: int) -> List[str]:
-        """
-        Check for Tier 1 extreme signals
-        Returns list of triggered signal strings
-        """
+                                distance: float, merch_fraud_rate: float, 
+                                merch_total: int, fraud_history: int) -> List[str]:
+
         tier1 = self.get_tier1_rules()
         extreme_signals = []
         
@@ -202,7 +199,11 @@ class FraudRulesLoader:
         # Merchant checks
         for check in tier1.get("extreme_signals", {}).get("merchant_checks", []):
             if check["code"] == "FRAUD_MERCHANT" and merch_fraud_rate > 0.4 and merch_total > 50:
-                extreme_signals.append(check["format"].format(fraud_rate=merch_fraud_rate))
+                # Add the missing variable
+                extreme_signals.append(check["format"].format(
+                    fraud_rate=merch_fraud_rate,
+                    **{'fraud_rate*100': merch_fraud_rate * 100}  # ← ADD THIS
+                ))
         
         # History checks
         for check in tier1.get("extreme_signals", {}).get("history_checks", []):
@@ -228,12 +229,9 @@ class FraudRulesLoader:
         return (False, 0, 0, [])
     
     def calculate_tier2_score(self, z_amt: float, z_dist: float, merch_fraud_rate: float,
-                              merch_total: int, is_online: bool, is_late: bool, amt: float,
-                              fraud_history: int, ml_score: float) -> Tuple[int, List[str]]:
-        """
-        Calculate Tier 2 score based on scoring rules
-        Returns: (total_score, triggered_reasons)
-        """
+                          merch_total: int, is_online: bool, is_late: bool, amt: float,
+                          fraud_history: int, ml_score: float) -> Tuple[int, List[str]]:
+
         tier2 = self.get_tier2_rules()
         total_score = 0
         reasons = []
@@ -264,9 +262,14 @@ class FraudRulesLoader:
             
             if triggered:
                 total_score += rule["points"]
+                # Add the missing variable for fraud_rate*100
                 formatted = rule["format"].format(
-                    z_amt=z_amt, z_dist=z_dist, fraud_rate=merch_fraud_rate,
-                    fraud_history=fraud_history, ml_score=ml_score
+                    z_amt=z_amt, 
+                    z_dist=z_dist, 
+                    fraud_rate=merch_fraud_rate,
+                    **{'fraud_rate*100': merch_fraud_rate * 100},  # ← ADD THIS LINE
+                    fraud_history=fraud_history, 
+                    ml_score=ml_score
                 )
                 reasons.append(formatted)
         

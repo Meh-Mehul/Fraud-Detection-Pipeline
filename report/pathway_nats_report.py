@@ -13,6 +13,11 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from shared.metrics import initialize_metrics, get_metrics_manager, record_pipeline_latency, get_timestamp_ms
+
+
+METRICS_PORT = 8004
+
 
 # ----------------------------------------------------------------------------
 # SETUP: Import Shared Rules Loader
@@ -627,6 +632,29 @@ class ReportGenerator:
             # Build PDF with custom canvas
             doc.build(story, canvasmaker=HeaderFooterCanvas)
             
+            # Save companion JSON file for frontend parsing
+            json_filepath = filepath.with_suffix('.json')
+            json_data = {
+                'trans_num': alert_data['trans_num'],
+                'cc_num': str(alert_data['cc_num']),
+                'amt': alert_data['amt'],
+                'merchant': alert_data['merchant'],
+                'category': alert_data['category'],
+                'location': alert_data['location'],
+                'risk_score': alert_data['risk_score'],
+                'tier': alert_data['tier'],
+                'reasons': alert_data.get('reasons', ''),
+                'confidence': alert_data.get('confidence', 0),
+                'actual_fraud': alert_data.get('actual_fraud', 0),
+                'ml_score': alert_data.get('ml_score', 0),
+                'first': alert_data.get('first', ''),
+                'last': alert_data.get('last', ''),
+                'city': alert_data.get('city', ''),
+                'state': alert_data.get('state', ''),
+            }
+            with open(json_filepath, 'w') as f:
+                json.dump(json_data, f, indent=2)
+            
             print(f"   ✓ PDF generated: {filename}")
             return str(filepath)
             
@@ -658,8 +686,33 @@ def process_alert(alert_json: str) -> str:
     """Process fraud alert and generate report if needed"""
     
     try:
+        # Calculate timestamps
+        report_timestamp_ms = get_timestamp_ms()
+        
         # Parse JSON string
         alert_data = json.loads(alert_json)
+        
+        # Calculate Detector→Report latency from detector_timestamp_ms
+        detector_timestamp_ms = alert_data.get('detector_timestamp_ms', 0)
+        if detector_timestamp_ms and detector_timestamp_ms > 0:
+            det_to_report_latency = (report_timestamp_ms - detector_timestamp_ms) / 1000.0  # to seconds
+            if det_to_report_latency > 0 and det_to_report_latency < 60:  # sanity check
+                record_pipeline_latency("detector_to_report", det_to_report_latency)
+        
+        # Calculate TRUE END-TO-END latency: Publisher → Report Generator
+        # Uses publish_timestamp_ms that was set when the transaction was first published
+        latency_ms_data = alert_data.get('latency_ms', {})
+        publish_timestamp_ms = latency_ms_data.get('publish_timestamp_ms', 0) if isinstance(latency_ms_data, dict) else 0
+        
+        # Fallback: get from the nested latency structure passed through detector
+        if not publish_timestamp_ms:
+            # The detector passes publish_timestamp_ms in the alert data
+            publish_timestamp_ms = alert_data.get('publish_timestamp_ms', 0)
+        
+        if publish_timestamp_ms and publish_timestamp_ms > 0:
+            end_to_end_latency = (report_timestamp_ms - publish_timestamp_ms) / 1000.0  # to seconds
+            if end_to_end_latency > 0 and end_to_end_latency < 120:  # sanity check
+                record_pipeline_latency("publisher_to_report", end_to_end_latency)
         
         # Check if it's an alert
         if not alert_data.get('is_alert', False):
@@ -702,6 +755,10 @@ def process_alert(alert_json: str) -> str:
 # ============================================================================
 # MAIN REPORT GENERATOR
 # ============================================================================
+
+metrics_manager = initialize_metrics("report_generator", port=METRICS_PORT)
+
+
 
 def run_report_generator():
     """Main report generation pipeline with NATS"""

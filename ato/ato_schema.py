@@ -7,6 +7,23 @@ import pathway as pw
 from typing import Optional
 
 
+class TransactionSchema(pw.Schema):
+    """
+    Schema for transaction events from CSV file
+    """
+    step: int = pw.column_definition(dtype=int)
+    type: str = pw.column_definition(dtype=str)
+    amount: float = pw.column_definition(dtype=float)
+    nameOrig: str = pw.column_definition(dtype=str)
+    oldbalanceOrg: float = pw.column_definition(dtype=float)
+    newbalanceOrig: float = pw.column_definition(dtype=float)
+    nameDest: str = pw.column_definition(dtype=str)
+    oldbalanceDest: float = pw.column_definition(dtype=float)
+    newbalanceDest: float = pw.column_definition(dtype=float)
+    isFraud: int = pw.column_definition(dtype=int)
+    isFlaggedFraud: int = pw.column_definition(dtype=int)
+
+
 class LoginAttemptSchema(pw.Schema):
     """
     Schema for login attempt events from Kafka topic: login_attempts
