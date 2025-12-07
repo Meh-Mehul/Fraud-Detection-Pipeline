@@ -24,7 +24,7 @@ if not _STATS_FILE.exists():
         "merchants": {},
         "categories": {}
     }))
-    print(f"✓ Initialized stats store at {_STATS_FILE}")
+    print(f"[OK] Initialized stats store at {_STATS_FILE}")
 
 
 # ──────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ def _safe_load():
         with open(_STATS_FILE, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"⚠️  Error loading stats: {e}")
+        print(f"[WARN]  Error loading stats: {e}")
         return {"customers": {}, "merchants": {}, "categories": {}}
 
 
@@ -53,7 +53,7 @@ def _safe_save(obj):
         tmp.replace(_STATS_FILE)
         return True
     except Exception as e:
-        print(f"❌ Error saving stats: {e}")
+        print(f"[ERROR] Error saving stats: {e}")
         return False
 
 
@@ -90,8 +90,6 @@ def update_customer(cc_num: str, amt: float, dist: float, is_fraud: int):
         c["fraud_history"] += int(is_fraud)
 
         success = _safe_save(obj)
-        if success and c["count"] % 100 == 0:
-            print(f"📊 Customer {cc_num}: {c['count']} transactions")
         return success
 
 
@@ -232,4 +230,4 @@ def reset_stats():
     with _LOCK:
         obj = {"customers": {}, "merchants": {}, "categories": {}}
         _safe_save(obj)
-        print("✓ Stats reset")
+        print("[OK] Stats reset")

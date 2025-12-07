@@ -266,7 +266,7 @@ def scan_all_reports():
             
             reports.append(report_data)
         except Exception as e:
-            print(f"❌ Error processing {pdf_file}: {e}")
+            print(f"[ERROR] Error processing {pdf_file}: {e}")
             continue
     
     # Update cache with all reports
@@ -286,9 +286,9 @@ def scan_all_reports():
 async def startup_event():
     load_stats()
     scan_all_reports()
-    print(f"📊 Total reports: {len(all_reports_cache)}")
-    print(f"📊 Frontend queue: {len(frontend_queue)}")
-    print(f"📊 Reviewed: {len(reviewed_reports)}")
+    print(f"[INFO] Total reports: {len(all_reports_cache)}")
+    print(f"[INFO] Frontend queue: {len(frontend_queue)}")
+    print(f"[INFO] Reviewed: {len(reviewed_reports)}")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -788,7 +788,7 @@ async def submit_feedback(feedback: FeedbackRequest):
     # Rebuild queue with diverse reports
     scan_all_reports()
     
-    print(f"✓ Feedback: {feedback.filename} -> {'FRAUD' if feedback.is_fraud else 'LEGITIMATE'}")
+    print(f"[OK] Feedback: {feedback.filename} -> {'FRAUD' if feedback.is_fraud else 'LEGITIMATE'}")
     print(f"  Queue rebuilt: {len(frontend_queue)} diverse reports")
     
     return {
@@ -839,7 +839,7 @@ async def negative_feedback(feedback: NegativeFeedbackRequest):
         await nc.close()
         
         label = "FRAUD (False Negative!)" if feedback.is_fraud else "LEGITIMATE"
-        print(f"✓ Negative Review: {feedback.trans_num} -> {label}")
+        print(f"[OK] Negative Review: {feedback.trans_num} -> {label}")
         
         return {'success': True, 'message': f'Feedback recorded: {label}'}
     except Exception as e:

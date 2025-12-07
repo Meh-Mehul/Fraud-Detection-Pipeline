@@ -26,13 +26,13 @@ class FraudRulesLoader:
         try:
             with open(self.rules_file, 'r') as f:
                 rules = json.load(f)
-            print(f"✓ Loaded fraud rules from: {self.rules_file}")
+            print(f"[OK] Loaded fraud rules from: {self.rules_file}")
             return rules
         except FileNotFoundError:
-            print(f"❌ Rules file not found: {self.rules_file}")
+            print(f"[ERROR] Rules file not found: {self.rules_file}")
             raise
         except json.JSONDecodeError as e:
-            print(f"❌ Error parsing rules JSON: {e}")
+            print(f"[ERROR] Error parsing rules JSON: {e}")
             raise
     
     # ========================================================================

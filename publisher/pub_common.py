@@ -98,12 +98,12 @@ def verify_fraud_column():
         header = f.readline().strip().split(",")
         
         if "is_fraud" not in header:
-            print("❌ ERROR: is_fraud column not found in CSV!")
+            print("[ERROR] ERROR: is_fraud column not found in CSV!")
             print(f"   Available columns: {header}")
             return False
         
         fraud_idx = header.index("is_fraud")
-        print(f"✓ Found is_fraud column at index {fraud_idx}")
+        print(f"[OK] Found is_fraud column at index {fraud_idx}")
         
         # Analyze class distribution
         fraud_count = 0
@@ -121,18 +121,18 @@ def verify_fraud_column():
         fraud_pct = (fraud_count / total * 100) if total > 0 else 0
         legit_pct = (legit_count / total * 100) if total > 0 else 0
         
-        print(f"\n📊 Dataset Class Distribution:")
+        print(f"\n[INFO] Dataset Class Distribution:")
         print(f"   Total samples: {total:,}")
         print(f"   Fraudulent:    {fraud_count:,} ({fraud_pct:.2f}%)")
         print(f"   Legitimate:    {legit_count:,} ({legit_pct:.2f}%)")
         print(f"   Class ratio:   1:{legit_count/fraud_count:.1f}" if fraud_count > 0 else "")
         
         if fraud_count == 0:
-            print("⚠️  WARNING: No fraud cases found in dataset!")
+            print("[WARN]  WARNING: No fraud cases found in dataset!")
             return False
         
         if fraud_pct < 0.1:
-            print(f"⚠️  WARNING: Very low fraud rate ({fraud_pct:.3f}%). Model may struggle.")
+            print(f"[WARN]  WARNING: Very low fraud rate ({fraud_pct:.3f}%). Model may struggle.")
         
         return True
 
@@ -163,11 +163,11 @@ def stream_feedback_data(tps):
     fraud_count = sum(1 for row in data if row.strip().split(",")[fraud_idx] == "1")
     legit_count = len(data) - fraud_count
     
-    print(f"\n📊 Feedback Stream Content:")
+    print(f"\n[INFO] Feedback Stream Content:")
     print(f"   Total transactions: {len(data):,}")
     print(f"   Fraudulent:         {fraud_count:,} ({fraud_count/len(data)*100:.2f}%)")
     print(f"   Legitimate:         {legit_count:,} ({legit_count/len(data)*100:.2f}%)")
-    print(f"\n   ℹ️  Both classes are necessary for training:")
+    print(f"\n     Both classes are necessary for training:")
     print(f"      • Fraud samples teach the model what fraud looks like")
     print(f"      • Legitimate samples teach what normal behavior is")
     print(f"      • The model learns to distinguish between them")
@@ -182,7 +182,7 @@ def stream_feedback_data(tps):
     sent_fraud = 0
     sent_legit = 0
     
-    print(f"\n📤 [FEEDBACK] Streaming at {tps} TPS to topic: {FEEDBACK_TOPIC}")
+    print(f"\n[SEND] [FEEDBACK] Streaming at {tps} TPS to topic: {FEEDBACK_TOPIC}")
     print("=" * 70)
 
     while True:
@@ -216,7 +216,7 @@ def stream_feedback_data(tps):
 
 def run_feedback_publisher():
     """Run the feedback publisher process."""
-    print("\n🔵 Starting FEEDBACK Publisher...")
+    print("\n[START] Starting FEEDBACK Publisher...")
     
     # Start streaming thread
     t = threading.Thread(target=stream_feedback_data, args=(TARGET_TPS,), daemon=True)
@@ -231,7 +231,7 @@ def run_feedback_publisher():
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=FEEDBACK_TOPIC, format="json")
     
-    print("✓ Feedback publisher running...\n")
+    print("[OK] Feedback publisher running...\n")
     pw.run()
 
 
@@ -262,7 +262,7 @@ def stream_detector_data(tps):
     interval = 1.0 / tps
     idx = 0
 
-    print(f"\n📤 [DETECTOR] Streaming {len(data):,} transactions (no is_fraud column)")
+    print(f"\n[SEND] [DETECTOR] Streaming {len(data):,} transactions (no is_fraud column)")
     print(f"   Topic: {DETECTOR_TOPIC}")
     print("=" * 70)
 
@@ -289,7 +289,7 @@ def stream_detector_data(tps):
 
 def run_detector_publisher():
     """Run the detector publisher process."""
-    print("\n🟢 Starting DETECTOR Publisher...")
+    print("\n[START] Starting DETECTOR Publisher...")
     
     # Start streaming thread
     t = threading.Thread(target=stream_detector_data, args=(TARGET_TPS,), daemon=True)
@@ -304,7 +304,7 @@ def run_detector_publisher():
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=DETECTOR_TOPIC, format="json")
     
-    print("✓ Detector publisher running...\n")
+    print("[OK] Detector publisher running...\n")
     pw.run()
 
 
@@ -316,14 +316,14 @@ def main():
     print("═" * 70)
     print("   COMBINED PUBLISHER - Feedback + Detector")
     print("═" * 70)
-    print("\n🎯 This script runs TWO publishers concurrently:")
+    print("\n This script runs TWO publishers concurrently:")
     print("   1. FEEDBACK Publisher  → fraud.feedback (with is_fraud)")
     print("   2. DETECTOR Publisher  → fraud.transactions (without is_fraud)")
     print()
     
     # Verify data integrity
     if not verify_fraud_column():
-        print("\n❌ Exiting due to data issues")
+        print("\n[ERROR] Exiting due to data issues")
         return
     
     print("\n" + "─" * 70)
@@ -347,12 +347,12 @@ def main():
         feedback_process.join()
         detector_process.join()
     except KeyboardInterrupt:
-        print("\n\n⚠️  Shutting down publishers...")
+        print("\n\n[WARN]  Shutting down publishers...")
         feedback_process.terminate()
         detector_process.terminate()
         feedback_process.join()
         detector_process.join()
-        print("✓ Publishers stopped cleanly")
+        print("[OK] Publishers stopped cleanly")
 
 
 if __name__ == "__main__":

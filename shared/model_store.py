@@ -46,7 +46,7 @@ def save(model_main, model_validator):
             
             # Verify the file was created and is valid
             if not MODEL_FILE.exists():
-                print(f"❌ Model file not created: {MODEL_FILE}")
+                print(f"[ERROR] Model file not created: {MODEL_FILE}")
                 return False
             
             # Quick validation - try to load it back
@@ -54,14 +54,14 @@ def save(model_main, model_validator):
                 test_load = pickle.load(f)
             
             if not isinstance(test_load, tuple) or len(test_load) != 2:
-                print(f"❌ Model file invalid format after save")
+                print(f"[ERROR] Model file invalid format after save")
                 return False
             
-            print(f"✓ Models saved successfully to {MODEL_FILE} ({MODEL_FILE.stat().st_size / 1024:.1f} KB)")
+            print(f"[OK] Models saved successfully to {MODEL_FILE} ({MODEL_FILE.stat().st_size / 1024:.1f} KB)")
             return True
             
         except Exception as e:
-            print(f"❌ Model save error: {e}")
+            print(f"[ERROR] Model save error: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -87,14 +87,14 @@ def load():
             
             # Validate format
             if not isinstance(models, tuple) or len(models) != 2:
-                print(f"⚠️  Invalid model format: {type(models)}, expected tuple of length 2")
+                print(f"[WARN]  Invalid model format: {type(models)}, expected tuple of length 2")
                 return None
             
             model_main, model_validator = models
             return (model_main, model_validator)
             
         except Exception as e:
-            print(f"❌ Model load error: {e}")
+            print(f"[ERROR] Model load error: {e}")
             return None
 
 
@@ -111,6 +111,6 @@ def delete():
     with _LOCK:
         if MODEL_FILE.exists():
             MODEL_FILE.unlink()
-            print("✓ Model file deleted")
+            print("[OK] Model file deleted")
             return True
         return False

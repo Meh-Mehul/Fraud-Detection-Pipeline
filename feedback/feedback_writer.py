@@ -25,7 +25,8 @@ from shared.metrics import (
     record_model_update,
     record_training_sample,
     set_model_weight_delta,
-    get_metrics_manager
+    get_metrics_manager,
+    load_baseline_metrics
 )
 
 
@@ -110,12 +111,12 @@ class EnhancedTrainer:
             if self.updates % 100 == 0:
                 total = self.fraud_count + self.legit_count
                 fraud_rate = (self.fraud_count / total * 100) if total > 0 else 0
-                print(f"📚 Trained on {total} samples | Fraud: {self.fraud_count} ({fraud_rate:.1f}%)")
+                print(f"[INFO] Trained on {total} samples | Fraud: {self.fraud_count} ({fraud_rate:.1f}%)")
                 
                 # Print performance metrics
                 if metrics_manager:
                     stats = metrics_manager.get_performance_stats()
-                    print(f"   📊 F1: {stats['f1']:.3f} | Precision: {stats['precision']:.3f} | Recall: {stats['recall']:.3f}")
+                    print(f"   [INFO] F1: {stats['f1']:.3f} | Precision: {stats['precision']:.3f} | Recall: {stats['recall']:.3f}")
             
             if self.updates % self.save_every == 0:
                 self.save()
@@ -236,6 +237,9 @@ def feedback_train_enhanced(trans_num, cc_num, amt, lat, long, merch_lat, merch_
 
 metrics_manager = initialize_metrics("feedback", port=METRICS_PORT)
 
+# Bootstrap F1 from pretrain baseline (avoids slow warm-up)
+load_baseline_metrics()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN
@@ -254,7 +258,7 @@ def run_feedback_writer():
     # Check Redis connection
     if redis_store.health_check():
         summary = redis_store.get_stats_summary()
-        print(f"✓ Redis connected")
+        print(f"[OK] Redis connected")
         print(f"   Customers: {summary['customers']:,}")
         print(f"   Merchants: {summary['merchants']:,}")
         print(f"   Categories: {summary['categories']:,}")
@@ -290,9 +294,9 @@ def run_feedback_writer():
     
     pw.io.null.write(trained)
     
-    print("✓ Feedback writer running...")
-    print("✓ Training model and calculating performance metrics")
-    print("✓ Tracking: F1, Precision, Recall, Model Updates")
+    print("[OK] Feedback writer running...")
+    print("[OK] Training model and calculating performance metrics")
+    print("[OK] Tracking: F1, Precision, Recall, Model Updates")
     print()
     
     pw.run(persistence_config=CHECKPOINT_CONFIG)

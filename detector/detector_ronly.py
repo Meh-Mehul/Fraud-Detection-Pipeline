@@ -330,7 +330,7 @@ def run_detector():
     # Check Redis
     if redis_store.health_check():
         summary = redis_store.get_stats_summary()
-        print(f"✓ Redis connected")
+        print(f"[OK] Redis connected")
         print(f"   Customers: {summary['customers']:,}")
         print(f"   Merchants: {summary['merchants']:,}")
         print(f"   Categories: {summary['categories']:,}")
@@ -384,9 +384,9 @@ def run_detector():
         topic=ALERTS_TOPIC
     )
 
-    print("\n✓ Detector active with pipeline latency tracking")
-    print(f"✓ Metrics: http://localhost:{METRICS_PORT}/metrics")
-    print(f"✓ Tracking: Publisher→Detector, Detector Total, ML Inference")
+    print("\n[OK] Detector active with pipeline latency tracking")
+    print(f"[OK] Metrics: http://localhost:{METRICS_PORT}/metrics")
+    print(f"[OK] Tracking: Publisher→Detector, Detector Total, ML Inference")
     print()
 
     pw.run(persistence_config=CHECKPOINT_CONFIG)

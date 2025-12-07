@@ -82,7 +82,7 @@ def process_result(alert_json: str) -> str:
             # Save to file every 50 transactions
             if len(negative_buffer) % 50 == 0:
                 save_buffer_to_file()
-                print(f"   💾 Saved {len(negative_buffer)} negative transactions")
+                print(f"   [SAVE] Saved {len(negative_buffer)} negative transactions")
         
         return json.dumps({'processed': True, 'is_alert': is_alert})
         
@@ -131,8 +131,8 @@ def run_negative_collector():
     # Null writer just to keep the pipeline running
     pw.io.null.write(processed)
     
-    print("✓ Negative collector active")
-    print(f"✓ Storing non-alert transactions to: {OUTPUT_FILE}")
+    print("[OK] Negative collector active")
+    print(f"[OK] Storing non-alert transactions to: {OUTPUT_FILE}")
     print()
     
     pw.run(persistence_config=CHECKPOINT_CONFIG)

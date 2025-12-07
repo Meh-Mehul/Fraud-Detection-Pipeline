@@ -93,7 +93,7 @@ def stream_second_half(tps):
     interval = 1.0 / tps
     idx = 0
 
-    print(f"📤 DETECTOR Publisher streaming {len(data)} rows (2nd half, no is_fraud)")
+    print(f"[SEND] DETECTOR Publisher streaming {len(data)} rows (2nd half, no is_fraud)")
 
     while True:
         t0 = time.time()

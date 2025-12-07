@@ -35,9 +35,9 @@ if str(shared_path) not in sys.path:
 
 try:
     from rules_loader import get_rules_loader
-    print("✓ Successfully imported shared rules loader")
+    print("[OK] Successfully imported shared rules loader")
 except ImportError:
-    print(f"❌ Could not import rules_loader from {shared_path}")
+    print(f"[ERROR] Could not import rules_loader from {shared_path}")
     print("Please ensure 'rules_loader.py' is in the 'shared' folder.")
     sys.exit(1)
 
@@ -60,19 +60,19 @@ try:
     from reportlab.pdfgen import canvas
     PDF_AVAILABLE = True
 except ImportError:
-    print("⚠️  Install reportlab: pip install reportlab")
+    print("[WARN]  Install reportlab: pip install reportlab")
 
 print("═══════════════════════════════════════════════════════════")
 print("  INTELLIGENT FRAUD REPORT GENERATOR")
 print("═══════════════════════════════════════════════════════════")
 
 if PDF_AVAILABLE:
-    print("✓ PDF generation enabled (ReportLab)")
+    print("[OK] PDF generation enabled (ReportLab)")
 else:
-    print("⚠️  PDF generation disabled - install reportlab")
+    print("[WARN]  PDF generation disabled - install reportlab")
 
-print("✓ Real-time NATS streaming")
-print("✓ Rules loaded from external JSON")
+print("[OK] Real-time NATS streaming")
+print("[OK] Rules loaded from external JSON")
 print()
 
 
@@ -177,7 +177,7 @@ class ReportGenerator:
         # Initialize the shared rules loader
         self.rules_loader = get_rules_loader()
         
-        print(f"✓ Reports directory: {self.reports_dir}/")
+        print(f"[OK] Reports directory: {self.reports_dir}/")
         print()
     
     def get_pattern_signature(self, reasons):
@@ -655,11 +655,11 @@ class ReportGenerator:
             with open(json_filepath, 'w') as f:
                 json.dump(json_data, f, indent=2)
             
-            print(f"   ✓ PDF generated: {filename}")
+            print(f"   [OK] PDF generated: {filename}")
             return str(filepath)
             
         except Exception as e:
-            print(f"   ❌ Error generating PDF: {e}")
+            print(f"   [ERROR] Error generating PDF: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -721,7 +721,7 @@ def process_alert(alert_json: str) -> str:
         generator.total_alerts += 1
         
         print(f"\n{'='*60}")
-        print(f"🎯 NEW FRAUD ALERT DETECTED #{generator.total_alerts}")
+        print(f"[ALERT] NEW FRAUD ALERT DETECTED #{generator.total_alerts}")
         print(f"{'='*60}")
         print(f"Transaction: {alert_data['trans_num']}")
         print(f"Customer: ****{str(alert_data['cc_num'])[-4:]}")
@@ -729,14 +729,14 @@ def process_alert(alert_json: str) -> str:
         print(f"Amount: ${alert_data['amt']:.2f}")
         print(f"Risk: {alert_data['risk_score']}/100")
         print()
-        print("📝 Generating comprehensive fraud report...")
+        print("Generating comprehensive fraud report...")
         
         filepath = generator.generate_pdf(alert_data)
         
         if filepath:
             generator.report_count += 1
-            print(f"✅ Report #{generator.report_count} generated successfully!")
-            print(f"   Status: {'CONFIRMED FRAUD ❌' if alert_data['actual_fraud'] == 1 else 'UNDER INVESTIGATION 🟠'}")
+            print(f"[OK] Report #{generator.report_count} generated successfully!")
+            print(f"   Status: {'CONFIRMED FRAUD [ERROR]' if alert_data['actual_fraud'] == 1 else 'UNDER INVESTIGATION [PENDING]'}")
             print()
             
             return json.dumps({
@@ -781,7 +781,7 @@ def run_report_generator():
         format='json'
     )
     
-    print(f"✓ Subscribed to: nats://{NATS_URI}/{NATS_ALERTS_TOPIC}")
+    print(f"[OK] Subscribed to: nats://{NATS_URI}/{NATS_ALERTS_TOPIC}")
     print()
     
     # Process alerts

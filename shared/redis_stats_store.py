@@ -37,9 +37,9 @@ class RedisStatsStore:
         # Test connection
         try:
             self.redis_client.ping()
-            print(f"✓ Redis connected: {host}:{port} (DB {db})")
+            print(f"[OK] Redis connected: {host}:{port} (DB {db})")
         except redis.ConnectionError as e:
-            print(f"❌ Redis connection failed: {e}")
+            print(f"[ERROR] Redis connection failed: {e}")
             raise
     
     # ============================================================================
@@ -53,10 +53,10 @@ class RedisStatsStore:
         """
         path = Path(json_path)
         if not path.exists():
-            print(f"⚠️  No existing stats file at {json_path}")
+            print(f"[WARN]  No existing stats file at {json_path}")
             return 0
         
-        print(f"📥 Loading stats from {json_path} into Redis...")
+        print(f"[LOAD] Loading stats from {json_path} into Redis...")
         
         with open(path, 'r') as f:
             data = json.load(f)
@@ -81,7 +81,7 @@ class RedisStatsStore:
                 self._set_category_stats(category, stats)
                 loaded_count += 1
         
-        print(f"✓ Loaded {loaded_count} entities into Redis")
+        print(f"[OK] Loaded {loaded_count} entities into Redis")
         return loaded_count
     
     def clear_all(self):
@@ -94,7 +94,7 @@ class RedisStatsStore:
             if keys:
                 deleted += self.redis_client.delete(*keys)
         
-        print(f"🗑️  Cleared {deleted} keys from Redis")
+        print(f"[CLEAR]  Cleared {deleted} keys from Redis")
         return deleted
     
     # ============================================================================
@@ -390,7 +390,7 @@ if __name__ == "__main__":
     
     # Show summary
     summary = store.get_stats_summary()
-    print(f"\n📊 Redis Stats Summary:")
+    print(f"\n[INFO] Redis Stats Summary:")
     print(f"   Customers: {summary['customers']:,}")
     print(f"   Merchants: {summary['merchants']:,}")
     print(f"   Categories: {summary['categories']:,}")

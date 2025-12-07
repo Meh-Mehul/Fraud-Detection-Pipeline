@@ -8,7 +8,7 @@
     "model"
   ],
   "timezone": "browser",
-  "refresh": "10s",
+  "refresh": "1s",
   "schemaVersion": 38,
   "time": {
     "from": "now-15m",

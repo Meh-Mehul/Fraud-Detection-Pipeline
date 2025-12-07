@@ -22,7 +22,7 @@ sys.path.append(str(ROOT))
 from shared import redis_stats_store
 
 # Show which Redis we're connecting to
-print(f"🔗 Connecting to Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
+print(f"[CONN] Connecting to Redis: {redis_stats_store.REDIS_HOST}:{redis_stats_store.REDIS_PORT}")
 
 
 def load_from_json():
@@ -34,16 +34,16 @@ def load_from_json():
     json_path = "./pathway_persistence/stats_store.json"
     
     if not Path(json_path).exists():
-        print(f"❌ File not found: {json_path}")
+        print(f"[ERROR] File not found: {json_path}")
         return
     
     store = redis_stats_store.RedisStatsStore()
     
-    print(f"📥 Loading from {json_path}...")
+    print(f"[LOAD] Loading from {json_path}...")
     loaded = store.load_from_json(json_path)
     
     summary = store.get_stats_summary()
-    print(f"\n✓ Successfully loaded {loaded} entities")
+    print(f"\n[OK] Successfully loaded {loaded} entities")
     print(f"   Customers:  {summary['customers']:,}")
     print(f"   Merchants:  {summary['merchants']:,}")
     print(f"   Categories: {summary['categories']:,}")
@@ -55,16 +55,16 @@ def clear_all():
     print("   CLEAR ALL STATS FROM REDIS")
     print("═══════════════════════════════════════════")
     
-    confirm = input("⚠️  This will delete ALL fraud detection data. Continue? (yes/no): ")
+    confirm = input("[WARN]  This will delete ALL fraud detection data. Continue? (yes/no): ")
     
     if confirm.lower() != 'yes':
-        print("❌ Cancelled")
+        print("[ERROR] Cancelled")
         return
     
     store = redis_stats_store.RedisStatsStore()
     deleted = store.clear_all()
     
-    print(f"✓ Deleted {deleted} keys from Redis")
+    print(f"[OK] Deleted {deleted} keys from Redis")
 
 
 def show_stats():
@@ -77,14 +77,14 @@ def show_stats():
     
     # Connection health
     if store.health_check():
-        print("✓ Redis connection: OK")
+        print("[OK] Redis connection: OK")
     else:
-        print("❌ Redis connection: FAILED")
+        print("[ERROR] Redis connection: FAILED")
         return
     
     summary = store.get_stats_summary()
     
-    print(f"\n📊 Entity Counts:")
+    print(f"\n[INFO] Entity Counts:")
     print(f"   Customers:  {summary['customers']:,}")
     print(f"   Merchants:  {summary['merchants']:,}")
     print(f"   Categories: {summary['categories']:,}")
@@ -122,21 +122,21 @@ def inspect_customer(cc_num):
     try:
         cust = store.get_customer_profile(int(cc_num))
         
-        print(f"\n📈 Transaction Statistics:")
+        print(f"\n[STATS] Transaction Statistics:")
         print(f"   Total Transactions: {cust['txn_count']}")
         print(f"   Fraud History:      {cust['fraud_history']}")
         print(f"   Fraud Rate:         {(cust['fraud_history']/cust['txn_count']*100) if cust['txn_count'] > 0 else 0:.2f}%")
         
-        print(f"\n💰 Amount Statistics:")
+        print(f"\n[AMT] Amount Statistics:")
         print(f"   Average:            ${cust['avg_amt']:.2f}")
         print(f"   Std Deviation:      ${cust['std_amt']:.2f}")
         
-        print(f"\n📍 Distance Statistics:")
+        print(f"\n[DIST] Distance Statistics:")
         print(f"   Average:            {cust['avg_dist']:.2f} km")
         print(f"   Std Deviation:      {cust['std_dist']:.2f} km")
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"[ERROR] Error: {e}")
 
 
 def export_to_json():
@@ -154,7 +154,7 @@ def export_to_json():
         'categories': {}
     }
     
-    print("📤 Exporting customers...")
+    print("[SAVE] Exporting customers...")
     for key in redis_client.scan_iter(match="customer:*"):
         cc_num = key.split(':')[1]
         data = redis_client.hgetall(key)
@@ -167,7 +167,7 @@ def export_to_json():
             'std_dist': float(data.get('std_dist', 0.0))
         }
     
-    print("📤 Exporting merchants...")
+    print("[SAVE] Exporting merchants...")
     for key in redis_client.scan_iter(match="merchant:*"):
         merchant = key.split(':', 1)[1]
         data = redis_client.hgetall(key)
@@ -177,7 +177,7 @@ def export_to_json():
             'fraud_rate': float(data.get('fraud_rate', 0.0))
         }
     
-    print("📤 Exporting categories...")
+    print("[SAVE] Exporting categories...")
     for key in redis_client.scan_iter(match="category:*"):
         category = key.split(':', 1)[1]
         data = redis_client.hgetall(key)
@@ -191,7 +191,7 @@ def export_to_json():
     with open(output_path, 'w') as f:
         json.dump(output, f, indent=2)
     
-    print(f"\n✓ Exported to {output_path}")
+    print(f"\n[OK] Exported to {output_path}")
     print(f"   Customers:  {len(output['customers']):,}")
     print(f"   Merchants:  {len(output['merchants']):,}")
     print(f"   Categories: {len(output['categories']):,}")
@@ -233,7 +233,7 @@ def main():
             show_stats()
         elif command == 'inspect':
             if len(sys.argv) < 3:
-                print("❌ Usage: python redis_manager.py inspect <CC_NUMBER>")
+                print("[ERROR] Usage: python redis_manager.py inspect <CC_NUMBER>")
                 return
             inspect_customer(sys.argv[2])
         elif command == 'export':
@@ -241,11 +241,11 @@ def main():
         elif command == 'help':
             show_help()
         else:
-            print(f"❌ Unknown command: {command}")
+            print(f"[ERROR] Unknown command: {command}")
             show_help()
     
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] Error: {e}")
         import traceback
         traceback.print_exc()
 

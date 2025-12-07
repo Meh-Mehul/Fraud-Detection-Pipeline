@@ -30,12 +30,12 @@ def verify_fraud_column():
         header = f.readline().strip().split(",")
         
         if "is_fraud" not in header:
-            print("❌ ERROR: is_fraud column not found in CSV!")
+            print("[ERROR] ERROR: is_fraud column not found in CSV!")
             print(f"   Available columns: {header}")
             return False
         
         fraud_idx = header.index("is_fraud")
-        print(f"✓ Found is_fraud column at index {fraud_idx}")
+        print(f"[OK] Found is_fraud column at index {fraud_idx}")
         
         # Analyze class distribution
         fraud_count = 0
@@ -53,18 +53,18 @@ def verify_fraud_column():
         fraud_pct = (fraud_count / total * 100) if total > 0 else 0
         legit_pct = (legit_count / total * 100) if total > 0 else 0
         
-        print(f"\n📊 Dataset Class Distribution:")
+        print(f"\n[INFO] Dataset Class Distribution:")
         print(f"   Total samples: {total:,}")
         print(f"   Fraudulent:    {fraud_count:,} ({fraud_pct:.2f}%)")
         print(f"   Legitimate:    {legit_count:,} ({legit_pct:.2f}%)")
         print(f"   Class ratio:   1:{legit_count/fraud_count:.1f}" if fraud_count > 0 else "")
         
         if fraud_count == 0:
-            print("⚠️  WARNING: No fraud cases found in dataset!")
+            print("[WARN]  WARNING: No fraud cases found in dataset!")
             return False
         
         if fraud_pct < 0.1:
-            print(f"⚠️  WARNING: Very low fraud rate ({fraud_pct:.3f}%). Model may struggle.")
+            print(f"[WARN]  WARNING: Very low fraud rate ({fraud_pct:.3f}%). Model may struggle.")
         
         return True
 
@@ -85,11 +85,11 @@ def stream_full_dataset(tps):
     fraud_count = sum(1 for row in data if row.strip().split(",")[fraud_idx] == "1")
     legit_count = len(data) - fraud_count
     
-    print(f"\n📊 Feedback Stream Content:")
+    print(f"\n[INFO] Feedback Stream Content:")
     print(f"   Total transactions: {len(data):,}")
     print(f"   Fraudulent:         {fraud_count:,} ({fraud_count/len(data)*100:.2f}%)")
     print(f"   Legitimate:         {legit_count:,} ({legit_count/len(data)*100:.2f}%)")
-    print(f"\n   ℹ️  Both classes are necessary for training:")
+    print(f"\n     Both classes are necessary for training:")
     print(f"      • Fraud samples teach the model what fraud looks like")
     print(f"      • Legitimate samples teach what normal behavior is")
     print(f"      • The model learns to distinguish between them")
@@ -104,7 +104,7 @@ def stream_full_dataset(tps):
     sent_fraud = 0
     sent_legit = 0
     
-    print(f"\n📤 Streaming at {tps} TPS to topic: {NATS_TOPIC}")
+    print(f"\n[SEND] Streaming at {tps} TPS to topic: {NATS_TOPIC}")
     print("=" * 70)
 
     while True:
@@ -143,7 +143,7 @@ def run_pub():
     
     # Verify fraud column exists and show distribution
     if not verify_fraud_column():
-        print("\n❌ Exiting due to data issues")
+        print("\n[ERROR] Exiting due to data issues")
         return
     
     print()
@@ -162,7 +162,7 @@ def run_pub():
     )
     pw.io.nats.write(tx, uri=NATS_URI, topic=NATS_TOPIC, format="json")
     
-    print("✓ Pathway publisher running...\n")
+    print("[OK] Pathway publisher running...\n")
     pw.run()
 
 

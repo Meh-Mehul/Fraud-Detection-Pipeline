@@ -10,8 +10,13 @@ from prometheus_client import (
 )
 import time
 import math
+import json
+from pathlib import Path
 from typing import Optional, List, Tuple
 from collections import deque
+
+# Baseline metrics file path
+BASELINE_METRICS_PATH = Path("./pathway_persistence/baseline_metrics.json")
 
 
 # ============================================================================
@@ -165,12 +170,72 @@ class WeightedMovingAverage:
         current_time = time.time()
         self._prune_old_samples(current_time)
         return len(self.samples)
+    
+    def bootstrap(self, value: float, num_samples: int = 10):
+        """
+        Bootstrap the moving average with initial samples.
+        Spreads samples across the window to provide stable initial value.
+        """
+        current_time = time.time()
+        # Add samples spread across the last 30 seconds
+        for i in range(num_samples):
+            # Spread samples from 30 seconds ago to now
+            age = 30.0 * (num_samples - i) / num_samples
+            self.add_sample(value, current_time - age)
 
 
 # Singleton instances for weighted moving averages
 _f1_wma = WeightedMovingAverage(window_seconds=60.0, half_life_seconds=15.0)
 _latency_wma = WeightedMovingAverage(window_seconds=60.0, half_life_seconds=15.0)
 _pipeline_latency_wma = WeightedMovingAverage(window_seconds=60.0, half_life_seconds=15.0)
+
+
+def load_baseline_metrics() -> Optional[dict]:
+    """
+    Load baseline metrics from pretrain and bootstrap the F1 weighted moving average.
+    Call this at startup to avoid slow F1 warm-up.
+    Returns the loaded metrics or None if file doesn't exist.
+    """
+    global _f1_wma
+    
+    if not BASELINE_METRICS_PATH.exists():
+        print(f"[WARN]  No baseline metrics found at {BASELINE_METRICS_PATH}")
+        return None
+    
+    try:
+        with open(BASELINE_METRICS_PATH, 'r') as f:
+            baseline = json.load(f)
+        
+        f1_value = baseline.get('f1', 0.0)
+        precision_value = baseline.get('precision', 0.0)
+        recall_value = baseline.get('recall', 0.0)
+        
+        # Bootstrap the F1 weighted moving average
+        _f1_wma.bootstrap(f1_value, num_samples=15)
+        
+        # Also set the gauges immediately
+        model_f1_score.set(f1_value)
+        model_f1_score_weighted_avg.set(f1_value)
+        model_precision.set(precision_value)
+        model_recall.set(recall_value)
+        
+        # Bootstrap the PerformanceCalculator with confusion matrix if available
+        if _metrics_manager is not None:
+            tp = baseline.get('tp', 0)
+            fp = baseline.get('fp', 0)
+            tn = baseline.get('tn', 0)
+            fn = baseline.get('fn', 0)
+            if tp + fp + tn + fn > 0:
+                _metrics_manager.performance_calc.bootstrap(tp, fp, tn, fn)
+        
+        print(f"[OK] Loaded baseline metrics from pretrain:")
+        print(f"  F1: {f1_value*100:.1f}%, Precision: {precision_value*100:.1f}%, Recall: {recall_value*100:.1f}%")
+        
+        return baseline
+        
+    except Exception as e:
+        print(f"[WARN]  Error loading baseline metrics: {e}")
+        return None
 
 
 def record_f1_weighted_sample(f1_value: float):
@@ -225,6 +290,19 @@ class PerformanceCalculator:
         self.fn = 0  # False Negatives
         
         self.last_update = time.time()
+    
+    def bootstrap(self, tp: int, fp: int, tn: int, fn: int):
+        """
+        Bootstrap the calculator with baseline confusion matrix values.
+        This allows F1 to show immediately on restart without waiting for samples.
+        """
+        self.tp = tp
+        self.fp = fp
+        self.tn = tn
+        self.fn = fn
+        # Immediately update metrics to set the gauges
+        self.update_metrics()
+        print(f"  [INFO] Bootstrapped with TP={tp}, FP={fp}, TN={tn}, FN={fn}")
     
     def add_sample(self, prediction: int, actual: int):
         """
@@ -326,9 +404,9 @@ class MetricsManager:
         # Start Prometheus HTTP server
         try:
             start_http_server(port)
-            print(f"📊 Metrics server started on port {port}")
+            print(f"[INFO] Metrics server started on port {port}")
         except OSError:
-            print(f"⚠️  Port {port} already in use - metrics endpoint already running")
+            print(f"[WARN]  Port {port} already in use - metrics endpoint already running")
     
     def add_performance_sample(self, prediction: int, actual: int):
         """Add a prediction-actual pair for performance calculation"""
